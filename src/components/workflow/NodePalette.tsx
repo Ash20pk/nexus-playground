@@ -10,7 +10,15 @@ import {
   Code,
   Play,
   GitBranch,
-  Plus
+  Plus,
+  Clock,
+  RotateCw,
+  Split,
+  Merge,
+  Users,
+  Wallet,
+  Bell,
+  Zap
 } from 'lucide-react';
 import { WorkflowNodeType } from '@/types/workflow';
 import { useWorkflowStore } from '@/store/workflowStore';
@@ -20,8 +28,9 @@ const NODE_TYPES: Array<{
   name: string;
   description: string;
   icon: React.ComponentType<{ className?: string }>;
-  category: 'action' | 'control';
+  category: 'control' | 'core' | 'defi' | 'advanced' | 'utility';
 }> = [
+  // Control Flow
   {
     type: 'trigger',
     name: 'Trigger',
@@ -30,46 +39,106 @@ const NODE_TYPES: Array<{
     category: 'control'
   },
   {
+    type: 'condition',
+    name: 'Condition',
+    description: 'Add conditional logic',
+    icon: GitBranch,
+    category: 'control'
+  },
+  {
+    type: 'delay',
+    name: 'Delay',
+    description: 'Wait for a specified duration',
+    icon: Clock,
+    category: 'control'
+  },
+  {
+    type: 'loop',
+    name: 'Loop',
+    description: 'Repeat operations multiple times',
+    icon: RotateCw,
+    category: 'control'
+  },
+  {
+    type: 'split',
+    name: 'Split',
+    description: 'Execute multiple branches in parallel',
+    icon: Split,
+    category: 'control'
+  },
+  {
+    type: 'aggregate',
+    name: 'Aggregate',
+    description: 'Combine results from multiple inputs',
+    icon: Merge,
+    category: 'control'
+  },
+  // Core Actions - Direct SDK Methods
+  {
     type: 'bridge',
     name: 'Bridge',
-    description: 'Move tokens between chains',
+    description: 'Bridge tokens between chains',
     icon: ArrowRightLeft,
-    category: 'action'
+    category: 'core'
   },
   {
     type: 'transfer',
     name: 'Transfer',
     description: 'Send tokens to an address',
     icon: Send,
-    category: 'action'
+    category: 'core'
   },
+  {
+    type: 'bridge-execute',
+    name: 'Bridge & Execute',
+    description: 'Bridge tokens and execute contract atomically',
+    icon: Zap,
+    category: 'core'
+  },
+  {
+    type: 'balance-check',
+    name: 'Balance Check',
+    description: 'Check token balance with conditions',
+    icon: Wallet,
+    category: 'core'
+  },
+  // DeFi Templates - Built on execute()
   {
     type: 'swap',
     name: 'Swap',
-    description: 'Exchange one token for another',
+    description: 'Exchange tokens via DEX (Uniswap, etc.)',
     icon: Repeat,
-    category: 'action'
+    category: 'defi'
   },
   {
     type: 'stake',
     name: 'Stake',
-    description: 'Stake tokens in DeFi protocols',
+    description: 'Stake in DeFi protocols (Aave, Compound)',
     icon: TrendingUp,
-    category: 'action'
+    category: 'defi'
+  },
+  // Advanced Actions
+  {
+    type: 'batch-transfer',
+    name: 'Batch Transfer',
+    description: 'Send tokens to multiple addresses',
+    icon: Users,
+    category: 'advanced'
   },
   {
     type: 'custom-contract',
     name: 'Custom Contract',
     description: 'Call any smart contract function',
     icon: Code,
-    category: 'action'
+    category: 'advanced'
   },
+  // Utilities
   {
-    type: 'condition',
-    name: 'Condition',
-    description: 'Add conditional logic',
-    icon: GitBranch,
-    category: 'control'
+    type: 'notification',
+    name: 'Notification',
+    description: 'Send alerts and notifications',
+    icon: Bell,
+    category: 'utility'
   }
 ];
 
@@ -78,8 +147,11 @@ interface NodePaletteProps {
 }
 
 export const NodePalette: React.FC<NodePaletteProps> = ({ onAddNode }) => {
-  const actionNodes = NODE_TYPES.filter(n => n.category === 'action');
   const controlNodes = NODE_TYPES.filter(n => n.category === 'control');
+  const coreNodes = NODE_TYPES.filter(n => n.category === 'core');
+  const defiNodes = NODE_TYPES.filter(n => n.category === 'defi');
+  const advancedNodes = NODE_TYPES.filter(n => n.category === 'advanced');
+  const utilityNodes = NODE_TYPES.filter(n => n.category === 'utility');
 
   const NodeButton: React.FC<{ nodeType: typeof NODE_TYPES[0] }> = ({ nodeType }) => {
     const Icon = nodeType.icon;
@@ -101,10 +173,10 @@ export const NodePalette: React.FC<NodePaletteProps> = ({ onAddNode }) => {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 max-h-[70vh] overflow-y-auto">
         <div>
           <div className="flex items-center gap-2 mb-2">
-            <Badge variant="outline" className="text-xs">Control</Badge>
+            <Badge variant="outline" className="text-xs">Control Flow</Badge>
           </div>
           <div className="space-y-2">
             {controlNodes.map((nodeType) => (
@@ -115,10 +187,43 @@ export const NodePalette: React.FC<NodePaletteProps> = ({ onAddNode }) => {
 
         <div>
           <div className="flex items-center gap-2 mb-2">
-            <Badge variant="outline" className="text-xs">Actions</Badge>
+            <Badge className="text-xs bg-blue-100 text-blue-800">Core SDK Actions</Badge>
           </div>
           <div className="space-y-2">
-            {actionNodes.map((nodeType) => (
+            {coreNodes.map((nodeType) => (
+              <NodeButton key={nodeType.type} nodeType={nodeType} />
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <Badge className="text-xs bg-purple-100 text-purple-800">DeFi Templates</Badge>
+          </div>
+          <div className="space-y-2">
+            {defiNodes.map((nodeType) => (
+              <NodeButton key={nodeType.type} nodeType={nodeType} />
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <Badge variant="outline" className="text-xs">Advanced</Badge>
+          </div>
+          <div className="space-y-2">
+            {advancedNodes.map((nodeType) => (
+              <NodeButton key={nodeType.type} nodeType={nodeType} />
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <Badge variant="outline" className="text-xs">Utilities</Badge>
+          </div>
+          <div className="space-y-2">
+            {utilityNodes.map((nodeType) => (
               <NodeButton key={nodeType.type} nodeType={nodeType} />
             ))}
           </div>

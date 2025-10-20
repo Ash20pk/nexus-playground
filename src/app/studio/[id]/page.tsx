@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect } from 'react';
+import { ReactFlowProvider } from '@xyflow/react';
 import { WorkflowBuilder } from '@/components/workflow/WorkflowBuilder';
 import { useWorkflowStore } from '@/store/workflowStore';
 import { useRouter } from 'next/navigation';
@@ -33,12 +34,15 @@ export default function WorkflowPage({ params }: WorkflowPageProps) {
     // Find and load the specific workflow
     const workflow = savedWorkflows.find(w => w.id === workflowId);
     if (workflow) {
-      loadWorkflow(workflow);
+      // Only load if different from currently loaded workflow to avoid clearing selection
+      if (currentWorkflow?.id !== workflowId) {
+        loadWorkflow(workflow);
+      }
     } else {
       // If workflow not found, redirect to studio
       router.push('/studio');
     }
-  }, [workflowId, savedWorkflows, loadWorkflow, router]);
+  }, [workflowId, savedWorkflows, loadWorkflow, router, currentWorkflow?.id]);
 
   if (!workflowId || !currentWorkflow) {
     return (
@@ -52,8 +56,10 @@ export default function WorkflowPage({ params }: WorkflowPageProps) {
   }
 
   return (
-    <div className="h-screen bg-gray-50">
-      <WorkflowBuilder />
-    </div>
+    <ReactFlowProvider>
+      <div className="h-screen bg-gray-50">
+        <WorkflowBuilder />
+      </div>
+    </ReactFlowProvider>
   );
 }

@@ -17,7 +17,7 @@ import React, {
   SetStateAction,
   Dispatch,
 } from "react";
-import { useAccount } from "wagmi";
+import { useAccount, useConfig } from "wagmi";
 
 interface NexusContextType {
   nexusSdk: NexusSDK | undefined;
@@ -47,17 +47,28 @@ export const NexusProvider: React.FC<NexusProviderProps> = ({
   const [intentModal, setIntentModal] = useState<OnIntentHookData | null>(null);
 
   const { connector } = useAccount();
+  const config = useConfig();
 
   const initializeSDK = useCallback(async () => {
     if (isConnected && !nexusSdk && connector) {
       try {
         // Get the EIP-1193 provider from the connector
-        // For ConnectKit/wagmi, we need to get the provider from the connector
+        // For browser wallets, try window.ethereum first
         const isTestnet = process.env.NEXT_PUBLIC_ENABLE_TESTNET === "true";
-        const provider = (await connector.getProvider()) as EthereumProvider;
+        
+        let provider: EthereumProvider | undefined;
+        
+        // Try to get provider from window.ethereum (MetaMask, etc.)
+        if (typeof window !== 'undefined' && (window as any).ethereum) {
+          provider = (window as any).ethereum as EthereumProvider;
+        } else if (connector && typeof (connector as any).getProvider === 'function') {
+          // Fallback: get provider from wagmi connector
+          const connectorProvider = await (connector as any).getProvider();
+          provider = connectorProvider as EthereumProvider;
+        }
 
-        if (!provider) {
-          throw new Error("No EIP-1193 provider available");
+        if (!provider || typeof provider.on !== 'function') {
+          throw new Error("No EIP-1193 compatible provider available");
         }
 
         const sdk = new NexusSDK({
@@ -94,7 +105,7 @@ export const NexusProvider: React.FC<NexusProviderProps> = ({
         setIsInitialized(false);
       }
     }
-  }, [isConnected, nexusSdk, connector]);
+  }, [isConnected, nexusSdk, connector, config]);
 
   const cleanupSDK = useCallback(() => {
     if (nexusSdk) {

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Card, CardHeader, CardContent, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -23,6 +23,137 @@ const AVAILABLE_CHAINS = getAvailableChains(IS_TESTNET);
 
 const TOKEN_OPTIONS = LOCAL_SUPPORTED_TOKENS;
 
+// Separate component for balance check configuration
+interface BalanceCheckConfigProps {
+  node: WorkflowNode;
+  onConfigUpdate: (key: string, value: any) => void;
+}
+
+const BalanceCheckConfig: React.FC<BalanceCheckConfigProps> = ({ node, onConfigUpdate }) => {
+  // Local state for immediate UI updates
+  const [localConfig, setLocalConfig] = useState(node.data.config);
+  const updateTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+
+  // Sync local config when node changes
+  React.useEffect(() => {
+    setLocalConfig(node.data.config);
+  }, [node.id]);
+
+  // Wrapper to prevent dialog closing issues
+  const handleSelectChange = (key: string, value: any) => {
+    // Update local state immediately for UI responsiveness
+    setLocalConfig(prev => ({ ...prev, [key]: value }));
+
+    // Debounce the actual store update
+    if (updateTimeoutRef.current) {
+      clearTimeout(updateTimeoutRef.current);
+    }
+
+    updateTimeoutRef.current = setTimeout(() => {
+      onConfigUpdate(key, value);
+    }, 300);
+  };
+
+  const handleConditionChange = (value: string) => {
+    handleSelectChange('condition', value);
+  };
+
+  // Cleanup timeout on unmount
+  React.useEffect(() => {
+    return () => {
+      if (updateTimeoutRef.current) {
+        clearTimeout(updateTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <Label>Chain</Label>
+        <Select
+          value={localConfig.chain?.toString()}
+          onValueChange={(value) => handleSelectChange('chain', parseInt(value))}
+        >
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {Object.entries(AVAILABLE_CHAINS).map(([id, chain]) => (
+              <SelectItem key={id} value={id}>
+                {chain.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div>
+        <Label>Token</Label>
+        <Select
+          value={localConfig.token}
+          onValueChange={(value) => handleSelectChange('token', value)}
+        >
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {TOKEN_OPTIONS.map((token) => (
+              <SelectItem key={token} value={token}>
+                {token}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div>
+        <Label>Address</Label>
+        <Input
+          value={localConfig.address}
+          onChange={(e) => handleSelectChange('address', e.target.value)}
+          placeholder="0x... or 'fromPrevious'"
+        />
+        <p className="text-xs text-gray-500 mt-1">
+          Use 'fromPrevious' to check address from previous node
+        </p>
+      </div>
+
+      <div>
+        <Label>Condition (Optional)</Label>
+        <Select
+          value={localConfig.condition || 'none'}
+          onValueChange={handleConditionChange}
+        >
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">No condition (just check)</SelectItem>
+            <SelectItem value="greater">Greater than (&gt;)</SelectItem>
+            <SelectItem value="less">Less than (&lt;)</SelectItem>
+            <SelectItem value="equal">Equal to (=)</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {(localConfig.condition !== 'none' && localConfig.condition) && (
+        <div>
+          <Label>Value to Compare</Label>
+          <Input
+            value={localConfig.value || ''}
+            onChange={(e) => handleSelectChange('value', e.target.value)}
+            placeholder="100"
+          />
+          <p className="text-xs text-gray-500 mt-1">
+            Balance will be compared against this value
+          </p>
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDeleteEdge }) => {
   const { updateNode, deleteNode, currentWorkflow } = useWorkflowStore();
 
@@ -38,13 +169,50 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
   }
 
   const handleConfigUpdate = (key: string, value: any) => {
+    console.log('📝 handleConfigUpdate called:', { nodeId: node.id, key, value });
     updateNode(node.id, {
       config: {
         ...node.data.config,
         [key]: value
       }
     });
+    console.log('✅ Store updated for node:', node.id);
   };
+
+  // Create a debounced update to prevent rapid re-renders
+  const [localConfig, setLocalConfig] = useState(node.data.config);
+  const updateTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+
+  // Sync local config when node changes
+  React.useEffect(() => {
+    setLocalConfig(node.data.config);
+  }, [node.id]);
+
+  const handleSelectChange = (key: string, value: any) => {
+    console.log('🎯 handleSelectChange called:', { key, value });
+    // Update local state immediately for UI responsiveness
+    setLocalConfig(prev => ({ ...prev, [key]: value }));
+    console.log('🔄 Local config updated');
+
+    // Debounce the actual store update
+    if (updateTimeoutRef.current) {
+      clearTimeout(updateTimeoutRef.current);
+    }
+
+    updateTimeoutRef.current = setTimeout(() => {
+      console.log('⏰ Debounced update executing:', { key, value });
+      handleConfigUpdate(key, value);
+    }, 300);
+  };
+
+  // Cleanup timeout on unmount
+  React.useEffect(() => {
+    return () => {
+      if (updateTimeoutRef.current) {
+        clearTimeout(updateTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const handleLabelUpdate = (label: string) => {
     updateNode(node.id, { label });
@@ -58,8 +226,8 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
             <div>
               <Label>Token</Label>
               <Select
-                value={node.data.config.token}
-                onValueChange={(value) => handleConfigUpdate('token', value)}
+                value={localConfig.token}
+                onValueChange={(value) => handleSelectChange('token', value)}
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -86,8 +254,8 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
             <div>
               <Label>From Chain</Label>
               <Select
-                value={node.data.config.fromChain?.toString()}
-                onValueChange={(value) => handleConfigUpdate('fromChain', parseInt(value))}
+                value={localConfig.fromChain?.toString()}
+                onValueChange={(value) => handleSelectChange('fromChain', parseInt(value))}
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -105,8 +273,8 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
             <div>
               <Label>To Chain</Label>
               <Select
-                value={node.data.config.toChain?.toString()}
-                onValueChange={(value) => handleConfigUpdate('toChain', parseInt(value))}
+                value={localConfig.toChain?.toString()}
+                onValueChange={(value) => handleSelectChange('toChain', parseInt(value))}
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -129,8 +297,8 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
             <div>
               <Label>Chain</Label>
               <Select
-                value={node.data.config.chain?.toString()}
-                onValueChange={(value) => handleConfigUpdate('chain', parseInt(value))}
+                value={localConfig.chain?.toString()}
+                onValueChange={(value) => handleSelectChange('chain', parseInt(value))}
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -148,8 +316,8 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
             <div>
               <Label>Token</Label>
               <Select
-                value={node.data.config.token}
-                onValueChange={(value) => handleConfigUpdate('token', value)}
+                value={localConfig.token}
+                onValueChange={(value) => handleSelectChange('token', value)}
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -190,8 +358,8 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
             <div>
               <Label>Chain</Label>
               <Select
-                value={node.data.config.chain?.toString()}
-                onValueChange={(value) => handleConfigUpdate('chain', parseInt(value))}
+                value={localConfig.chain?.toString()}
+                onValueChange={(value) => handleSelectChange('chain', parseInt(value))}
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -209,8 +377,8 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
             <div>
               <Label>From Token</Label>
               <Select
-                value={node.data.config.fromToken}
-                onValueChange={(value) => handleConfigUpdate('fromToken', value)}
+                value={localConfig.fromToken}
+                onValueChange={(value) => handleSelectChange('fromToken', value)}
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -228,8 +396,8 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
             <div>
               <Label>To Token</Label>
               <Select
-                value={node.data.config.toToken}
-                onValueChange={(value) => handleConfigUpdate('toToken', value)}
+                value={localConfig.toToken}
+                onValueChange={(value) => handleSelectChange('toToken', value)}
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -274,8 +442,8 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
             <div>
               <Label>Chain</Label>
               <Select
-                value={node.data.config.chain?.toString()}
-                onValueChange={(value) => handleConfigUpdate('chain', parseInt(value))}
+                value={localConfig.chain?.toString()}
+                onValueChange={(value) => handleSelectChange('chain', parseInt(value))}
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -293,8 +461,8 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
             <div>
               <Label>Token</Label>
               <Select
-                value={node.data.config.token}
-                onValueChange={(value) => handleConfigUpdate('token', value)}
+                value={localConfig.token}
+                onValueChange={(value) => handleSelectChange('token', value)}
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -321,8 +489,8 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
             <div>
               <Label>Protocol</Label>
               <Select
-                value={node.data.config.protocol}
-                onValueChange={(value) => handleConfigUpdate('protocol', value)}
+                value={localConfig.protocol}
+                onValueChange={(value) => handleSelectChange('protocol', value)}
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -343,8 +511,8 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
             <div>
               <Label>Chain</Label>
               <Select
-                value={node.data.config.chain?.toString()}
-                onValueChange={(value) => handleConfigUpdate('chain', parseInt(value))}
+                value={localConfig.chain?.toString()}
+                onValueChange={(value) => handleSelectChange('chain', parseInt(value))}
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -395,6 +563,14 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
               />
             </div>
           </div>
+        );
+
+      case 'balance-check':
+        return (
+          <BalanceCheckConfig
+            node={node}
+            onConfigUpdate={handleSelectChange}
+          />
         );
 
       case 'condition':

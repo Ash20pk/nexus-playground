@@ -128,12 +128,12 @@ export const WorkflowToolbar: React.FC = () => {
         <div className="flex items-center gap-4">
           <Link href="/studio" className="flex items-center gap-3 mr-6 hover:opacity-80 transition-opacity">
             <ArrowLeft className="h-5 w-5 text-gray-500" />
-            <span className="text-xl font-bold text-blue-500 tracking-wide">
-              Nexus Playground
-            </span>
+            <h1 className="text-3xl font-black text-black tracking-tight">
+                  Nexus Playground
+            </h1>
           </Link>
           <div className="border-l border-gray-200 pl-4">
-            <h2 className="text-lg font-semibold">
+            <h2 className="text-lg text-gray-600 font-semibold">
               {currentWorkflow?.name || 'Untitled Workflow'}
             </h2>
             <p className="text-sm text-gray-600">

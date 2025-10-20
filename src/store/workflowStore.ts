@@ -35,6 +35,7 @@ interface WorkflowState {
   // Node operations
   addNode: (type: WorkflowNodeType, position: { x: number; y: number }) => void;
   updateNode: (nodeId: string, updates: Partial<WorkflowNodeData>) => void;
+  updateNodePositions: (updates: Array<{ id: string; position: { x: number; y: number } }>) => void;
   deleteNode: (nodeId: string) => void;
   setSelectedNode: (nodeId: string | null) => void;
 
@@ -87,16 +88,17 @@ const createDefaultNode = (
         fromToken: 'USDC',
         toToken: 'ETH',
         amount: '100',
-        slippage: 0.5
+        slippage: 0.5,
+        dexProtocol: 'uniswap-v3' // Uses sdk.execute() with Uniswap V3 ABI
       }
     },
     stake: {
-      label: 'Stake Tokens',
+      label: 'Stake in DeFi',
       config: {
         chain: defaultChains.destination,
         token: 'USDC',
         amount: '100',
-        protocol: 'aave'
+        protocol: 'aave' // Uses sdk.execute() with Aave Pool ABI
       }
     },
     'custom-contract': {
@@ -109,6 +111,27 @@ const createDefaultNode = (
         parameters: []
       }
     },
+    'bridge-execute': {
+      label: 'Bridge & Execute',
+      config: {
+        token: 'USDC',
+        amount: '100',
+        toChainId: defaultChains.destination,
+        sourceChains: [], // Optional: specify source chains
+        execute: {
+          contractAddress: '',
+          contractAbi: [],
+          functionName: '',
+          parameters: [],
+          tokenApproval: {
+            token: 'USDC',
+            amount: '100'
+          }
+        },
+        waitForReceipt: true,
+        requiredConfirmations: 1
+      }
+    },
     trigger: {
       label: 'Trigger',
       config: {}
@@ -117,6 +140,58 @@ const createDefaultNode = (
       label: 'Condition',
       config: {
         condition: ''
+      }
+    },
+    delay: {
+      label: 'Delay',
+      config: {
+        duration: 5,
+        unit: 'seconds'
+      }
+    },
+    loop: {
+      label: 'Loop',
+      config: {
+        iterations: 1,
+        breakCondition: ''
+      }
+    },
+    split: {
+      label: 'Split',
+      config: {
+        branches: 2
+      }
+    },
+    aggregate: {
+      label: 'Aggregate',
+      config: {
+        operation: 'sum',
+        waitForAll: true
+      }
+    },
+    'batch-transfer': {
+      label: 'Batch Transfer',
+      config: {
+        chain: defaultChains.destination,
+        token: 'USDC',
+        recipients: []
+      }
+    },
+    'balance-check': {
+      label: 'Balance Check',
+      config: {
+        chain: defaultChains.destination,
+        token: 'USDC',
+        address: 'fromPrevious',
+        condition: 'none', // No condition by default (just check balance)
+        value: ''
+      }
+    },
+    notification: {
+      label: 'Notification',
+      config: {
+        type: 'console',
+        message: 'Workflow step completed'
       }
     }
   };
@@ -133,12 +208,12 @@ const createDefaultNode = (
       label: nodeConfig.label,
       config: nodeConfig.config,
       outputs: type === 'trigger' ? [{ name: 'start', type: 'transaction' }] : [
-        { name: 'amount', type: 'amount' },
-        { name: 'transaction', type: 'transaction' }
+        { name: 'transaction', type: 'transaction' },
+        { name: 'amount', type: 'amount' }
       ],
       inputs: type === 'trigger' ? [] : [
-        { name: 'amount', type: 'amount', required: false },
-        { name: 'trigger', type: 'transaction', required: true }
+        { name: 'trigger', type: 'transaction', required: true },
+        { name: 'amount', type: 'amount', required: false }
       ]
     }
   };
@@ -186,9 +261,14 @@ export const useWorkflowStore = create<WorkflowState>()(
     },
 
     loadWorkflow: (workflow: Workflow) => {
+      console.log('🔄 loadWorkflow called!');
+      console.trace('📍 loadWorkflow stack trace');
       set((state) => {
+        const isDifferentWorkflow = state.currentWorkflow?.id !== workflow.id;
         state.currentWorkflow = workflow;
-        state.selectedNodeId = null;
+        if (isDifferentWorkflow) {
+          state.selectedNodeId = null;
+        }
       });
     },
 
@@ -241,16 +321,36 @@ export const useWorkflowStore = create<WorkflowState>()(
     },
 
     updateNode: (nodeId: string, updates: Partial<WorkflowNodeData>) => {
+      console.log('🏪 Store updateNode called:', { nodeId, updates });
       set((state) => {
         if (state.currentWorkflow) {
           const nodeIndex = state.currentWorkflow.nodes.findIndex(n => n.id === nodeId);
           if (nodeIndex >= 0) {
+            console.log('🔄 Updating node in store:', nodeId);
             Object.assign(state.currentWorkflow.nodes[nodeIndex].data, updates);
             state.currentWorkflow.updated = new Date();
+            console.log('✅ Node updated, workflow timestamp:', state.currentWorkflow.updated);
           }
         }
       });
       // Auto-save to localStorage
+      get().saveCurrentWorkflow();
+      console.log('💾 Workflow saved to localStorage');
+    },
+
+    updateNodePositions: (updates: Array<{ id: string; position: { x: number; y: number } }>) => {
+      set((state) => {
+        if (state.currentWorkflow) {
+          updates.forEach(({ id, position }) => {
+            const nodeIndex = state.currentWorkflow!.nodes.findIndex(n => n.id === id);
+            if (nodeIndex >= 0) {
+              state.currentWorkflow!.nodes[nodeIndex].position = position;
+            }
+          });
+          state.currentWorkflow.updated = new Date();
+        }
+      });
+      // Save positions to localStorage
       get().saveCurrentWorkflow();
     },
 
@@ -272,6 +372,8 @@ export const useWorkflowStore = create<WorkflowState>()(
     },
 
     setSelectedNode: (nodeId: string | null) => {
+      console.log('🎯 setSelectedNode called with:', nodeId);
+      console.trace('📍 Call stack for setSelectedNode');
       set((state) => {
         state.selectedNodeId = nodeId;
       });
