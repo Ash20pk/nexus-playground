@@ -1,5 +1,9 @@
 import { Node, Edge } from '@xyflow/react';
-import { SUPPORTED_CHAINS_IDS, SUPPORTED_TOKENS } from '@avail-project/nexus-core';
+import { SUPPORTED_CHAINS, TOKEN_METADATA } from '@avail-project/nexus-core';
+
+// Type aliases for backward compatibility
+export type SUPPORTED_CHAINS_IDS = keyof typeof SUPPORTED_CHAINS;
+export type SUPPORTED_TOKENS = keyof typeof TOKEN_METADATA;
 
 export interface WorkflowNodeData {
   id: string;
@@ -29,6 +33,10 @@ export type WorkflowNodeType =
   | 'stake'
   // Advanced Actions
   | 'batch-transfer'
+  // SDK Features
+  | 'allowance-management'
+  | 'simulate-bridge'
+  | 'simulate-transfer'
   // Utilities
   | 'notification';
 
@@ -47,7 +55,8 @@ export interface TransferNodeConfig extends WorkflowNodeConfig {
   chain: SUPPORTED_CHAINS_IDS;
   token: SUPPORTED_TOKENS;
   amount: string | 'fromPrevious';
-  recipient: string;
+  toAddress: string; // Keep as toAddress for UI, map to recipient in execution
+  sourceChains?: SUPPORTED_CHAINS_IDS[]; // Optional source chain restrictions
 }
 
 export interface SwapNodeConfig extends WorkflowNodeConfig {
@@ -73,7 +82,13 @@ export interface CustomContractNodeConfig extends WorkflowNodeConfig {
   contractAddress: string;
   abi: any[];
   functionName: string;
-  parameters: any[];
+  functionParams?: any[]; // Optional custom parameters
+  amount?: string | 'fromPrevious'; // Optional amount for token operations
+  ethValue?: string; // Optional ETH value for payable functions
+  tokenApproval?: {
+    token: SUPPORTED_TOKENS;
+    amount: string;
+  }; // Optional token approval
 }
 
 export interface BridgeExecuteNodeConfig extends WorkflowNodeConfig {
@@ -93,6 +108,28 @@ export interface BridgeExecuteNodeConfig extends WorkflowNodeConfig {
   };
   waitForReceipt?: boolean;
   requiredConfirmations?: number;
+}
+
+export interface AllowanceManagementNodeConfig extends WorkflowNodeConfig {
+  token: SUPPORTED_TOKENS;
+  spender: string; // Contract address to approve
+  amount: string | 'max' | 'min'; // Allowance amount
+  chain: SUPPORTED_CHAINS_IDS;
+}
+
+export interface SimulateBridgeNodeConfig extends WorkflowNodeConfig {
+  token: SUPPORTED_TOKENS;
+  amount: string | 'fromPrevious';
+  chainId: SUPPORTED_CHAINS_IDS;
+  sourceChains?: SUPPORTED_CHAINS_IDS[];
+}
+
+export interface SimulateTransferNodeConfig extends WorkflowNodeConfig {
+  token: SUPPORTED_TOKENS;
+  amount: string | 'fromPrevious';
+  chainId: SUPPORTED_CHAINS_IDS;
+  recipient: string;
+  sourceChains?: SUPPORTED_CHAINS_IDS[];
 }
 
 export interface DelayNodeConfig extends WorkflowNodeConfig {

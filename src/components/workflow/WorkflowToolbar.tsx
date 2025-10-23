@@ -23,6 +23,7 @@ import {
 import { useWorkflowStore } from '@/store/workflowStore';
 import { useNexus } from '@/provider/NexusProvider';
 import ConnectWallet from '../blocks/connect-wallet';
+import { NetworkToggle } from '@/components/ui/network-toggle';
 import Link from 'next/link';
 import { toast } from 'sonner';
 
@@ -144,7 +145,11 @@ export const WorkflowToolbar: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-3">
-          <ConnectWallet />
+          <NetworkToggle />
+
+          <div className="border-l border-gray-200 pl-3">
+            <ConnectWallet />
+          </div>
 
           <div className="border-l border-gray-200 pl-3 flex items-center gap-2">
             <Button

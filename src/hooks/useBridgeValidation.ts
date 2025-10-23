@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { validateAmountInput } from "@/lib/bridge/formatters";
-import { SUPPORTED_TOKENS, UserAsset } from "@avail-project/nexus-core";
+import { UserAsset } from "@avail-project/nexus-core";
+import { SUPPORTED_TOKENS } from "@/types/workflow";
 import { BridgeValidationResult } from "@/types/bridge";
 
 export const useBridgeValidation = (

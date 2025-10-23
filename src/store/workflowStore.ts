@@ -11,6 +11,7 @@ import {
 } from '@/types/workflow';
 import { Node, Edge, Connection } from '@xyflow/react';
 import { DEFAULT_CHAINS } from '@/constants/networks';
+import { useNetworkStore } from '@/store/networkStore';
 
 interface WorkflowState {
   // Current workflow being edited
@@ -22,6 +23,8 @@ interface WorkflowState {
   // UI state
   isExecuting: boolean;
   selectedNodeId: string | null;
+  executingNodeId: string | null;
+  nodeExecutionStatus: Record<string, 'success' | 'error' | null>; // Track each node's execution result
 
   // Saved workflows
   savedWorkflows: Workflow[];
@@ -38,13 +41,16 @@ interface WorkflowState {
   updateNodePositions: (updates: Array<{ id: string; position: { x: number; y: number } }>) => void;
   deleteNode: (nodeId: string) => void;
   setSelectedNode: (nodeId: string | null) => void;
+  setExecutingNode: (nodeId: string | null) => void;
+  setNodeExecutionStatus: (nodeId: string, status: 'success' | 'error' | null) => void;
+  clearExecutionStatus: () => void;
 
   // Edge operations
   addEdge: (connection: Connection) => void;
   deleteEdge: (edgeId: string) => void;
 
   // Execution
-  executeWorkflow: () => Promise<void>;
+  executeWorkflow: (nexusSDK?: any) => Promise<void>;
   stopExecution: () => void;
 
   // Persistence
@@ -58,9 +64,9 @@ const createDefaultNode = (
 ): WorkflowNode => {
   const id = uuidv4();
 
-  // Use testnet or mainnet defaults based on environment
-  const isTestnet = process.env.NEXT_PUBLIC_ENABLE_TESTNET === 'true';
-  const defaultChains = isTestnet ? DEFAULT_CHAINS.testnet : DEFAULT_CHAINS.mainnet;
+  // Use current network type from store instead of environment variable
+  const networkStore = useNetworkStore.getState();
+  const defaultChains = networkStore.isTestnet() ? DEFAULT_CHAINS.testnet : DEFAULT_CHAINS.mainnet;
 
   const nodeConfigs = {
     bridge: {
@@ -207,14 +213,8 @@ const createDefaultNode = (
       type,
       label: nodeConfig.label,
       config: nodeConfig.config,
-      outputs: type === 'trigger' ? [{ name: 'start', type: 'transaction' }] : [
-        { name: 'transaction', type: 'transaction' },
-        { name: 'amount', type: 'amount' }
-      ],
-      inputs: type === 'trigger' ? [] : [
-        { name: 'trigger', type: 'transaction', required: true },
-        { name: 'amount', type: 'amount', required: false }
-      ]
+      outputs: type === 'trigger' ? [{ name: 'output', type: 'transaction' }] : [{ name: 'output', type: 'transaction' }],
+      inputs: type === 'trigger' ? [] : [{ name: 'input', type: 'transaction', required: true }]
     }
   };
 };
@@ -225,6 +225,8 @@ export const useWorkflowStore = create<WorkflowState>()(
     execution: null,
     isExecuting: false,
     selectedNodeId: null,
+    executingNodeId: null,
+    nodeExecutionStatus: {},
     savedWorkflows: [],
 
     createNewWorkflow: (name: string) => {
@@ -379,6 +381,27 @@ export const useWorkflowStore = create<WorkflowState>()(
       });
     },
 
+    setExecutingNode: (nodeId: string | null) => {
+      set((state) => {
+        state.executingNodeId = nodeId;
+        if (state.execution) {
+          state.execution.currentNodeId = nodeId || undefined;
+        }
+      });
+    },
+
+    setNodeExecutionStatus: (nodeId: string, status: 'success' | 'error' | null) => {
+      set((state) => {
+        state.nodeExecutionStatus[nodeId] = status;
+      });
+    },
+
+    clearExecutionStatus: () => {
+      set((state) => {
+        state.nodeExecutionStatus = {};
+      });
+    },
+
     addEdge: (connection: Connection) => {
       set((state) => {
         if (state.currentWorkflow && connection.source && connection.target) {
@@ -433,20 +456,37 @@ export const useWorkflowStore = create<WorkflowState>()(
 
       set((state) => {
         state.isExecuting = true;
+        state.executingNodeId = null;
+        state.nodeExecutionStatus = {}; // Clear previous execution status
+        // Clear any previous execution state completely
         state.execution = {
           id: uuidv4(),
           workflowId: state.currentWorkflow!.id,
           status: 'running',
           startedAt: new Date(),
-          results: {}
+          results: {},
+          currentNodeId: undefined
         };
       });
 
       try {
         // Execute workflow on frontend using real NexusSDK
         const { WorkflowExecutionEngine } = await import('@/lib/workflow/execution');
-        const engine = new WorkflowExecutionEngine(state.currentWorkflow, nexusSDK);
-        const executionResult = await engine.execute();
+        const { useNetworkStore } = await import('@/store/networkStore');
+
+        // Get network type from the store
+        const networkType = useNetworkStore.getState().networkType;
+
+        const context = {
+          nexusSdk: nexusSDK,
+          variables: {},
+          results: {},
+          networkType,
+          onNodeExecuting: (nodeId: string | null) => get().setExecutingNode(nodeId),
+          onNodeStatus: (nodeId: string, status: 'success' | 'error' | null) => get().setNodeExecutionStatus(nodeId, status)
+        };
+        const engine = new WorkflowExecutionEngine(context);
+        const executionResult = await engine.execute(state.currentWorkflow);
 
         // Save execution result to backend
         const response = await fetch(`/api/workflows/${state.currentWorkflow.id}/execute`, {
@@ -461,6 +501,7 @@ export const useWorkflowStore = create<WorkflowState>()(
 
         set((state) => {
           state.isExecuting = false;
+          state.executingNodeId = null;
           if (state.execution) {
             state.execution.status = executionResult.status;
             state.execution.results = executionResult.results;
@@ -483,6 +524,8 @@ export const useWorkflowStore = create<WorkflowState>()(
     stopExecution: () => {
       set((state) => {
         state.isExecuting = false;
+        state.executingNodeId = null;
+        // Keep execution status visible after stopping
         if (state.execution) {
           state.execution.status = 'failed';
           state.execution.error = 'Execution stopped by user';

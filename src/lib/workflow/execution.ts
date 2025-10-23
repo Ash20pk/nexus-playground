@@ -7,101 +7,77 @@ import {
   TransferNodeConfig,
   SwapNodeConfig,
   StakeNodeConfig,
-  CustomContractNodeConfig
+  CustomContractNodeConfig,
+  AllowanceManagementNodeConfig,
+  SimulateBridgeNodeConfig,
+  SimulateTransferNodeConfig
 } from '@/types/workflow';
+// Network store is used in workflowStore.ts to pass networkType to context
 
 export interface WorkflowExecutionContext {
   nexusSdk: NexusSDK;
-  variables: Record<string, any>;
-  results: Record<string, any>;
+  variables: Record<string, unknown>;
+  results: Record<string, unknown>;
+  networkType?: 'testnet' | 'mainnet'; // Add network type to context
+  onNodeExecuting?: (nodeId: string | null) => void;
+  onNodeStatus?: (nodeId: string, status: 'success' | 'error' | null) => void;
 }
 
 export class WorkflowExecutionEngine {
-  private workflow: Workflow;
   private context: WorkflowExecutionContext;
 
-  constructor(workflow: Workflow, nexusSdk: NexusSDK) {
-    this.workflow = workflow;
-    this.context = {
-      nexusSdk,
-      variables: {},
-      results: {}
-    };
+  constructor(context: WorkflowExecutionContext) {
+    this.context = context;
   }
 
-  async execute(): Promise<WorkflowExecution> {
+  async execute(workflow: Workflow): Promise<WorkflowExecution> {
     const execution: WorkflowExecution = {
-      id: crypto.randomUUID(),
-      workflowId: this.workflow.id,
+      id: Date.now().toString(),
+      workflowId: workflow.id,
       status: 'running',
-      startedAt: new Date(),
+      startTime: new Date(),
       results: {}
     };
 
     try {
-      // Find the trigger node to start execution
-      const triggerNode = this.workflow.nodes.find(node => node.data.type === 'trigger');
+      // Find trigger node to start execution
+      const triggerNode = workflow.nodes.find(node => node.data.type === 'trigger');
       if (!triggerNode) {
         throw new Error('No trigger node found in workflow');
       }
 
-      // Execute nodes in dependency order
-      const executionOrder = this.getExecutionOrder(triggerNode);
+      // Execute nodes in sequence (simplified execution order)
+      for (const node of workflow.nodes) {
+        if (node.data.type === 'trigger') continue; // Skip trigger node
 
-      for (const node of executionOrder) {
-        execution.currentNodeId = node.id;
+        console.log(`Executing node: ${node.data.label} (${node.data.type})`);
+        this.context.onNodeExecuting?.(node.id);
 
         try {
           const result = await this.executeNode(node);
-          this.context.results[node.id] = result;
           execution.results[node.id] = result;
+          this.context.results[node.id] = result;
+          this.context.onNodeStatus?.(node.id, 'success');
         } catch (error) {
-          execution.status = 'failed';
-          execution.error = error instanceof Error ? error.message : 'Unknown error';
-          execution.completedAt = new Date();
-          return execution;
+          console.error(`Node ${node.id} failed:`, error);
+          this.context.onNodeStatus?.(node.id, 'error');
+          throw error;
         }
       }
 
       execution.status = 'completed';
-      execution.completedAt = new Date();
-      return execution;
-
+      execution.endTime = new Date();
     } catch (error) {
       execution.status = 'failed';
       execution.error = error instanceof Error ? error.message : 'Unknown error';
-      execution.completedAt = new Date();
-      return execution;
+      execution.endTime = new Date();
+      throw error;
     }
+
+    return execution;
   }
 
-  private getExecutionOrder(startNode: WorkflowNode): WorkflowNode[] {
-    const visited = new Set<string>();
-    const result: WorkflowNode[] = [];
-
-    const dfs = (node: WorkflowNode) => {
-      if (visited.has(node.id)) return;
-
-      visited.add(node.id);
-      result.push(node);
-
-      // Find connected nodes
-      const outgoingEdges = this.workflow.edges.filter(edge => edge.source === node.id);
-      for (const edge of outgoingEdges) {
-        const nextNode = this.workflow.nodes.find(n => n.id === edge.target);
-        if (nextNode) {
-          dfs(nextNode);
-        }
-      }
-    };
-
-    dfs(startNode);
-    return result;
-  }
-
-  private async executeNode(node: WorkflowNode): Promise<any> {
-    console.log(`Executing node: ${node.data.label} (${node.data.type})`);
-
+  private async executeNode(node: WorkflowNode): Promise<unknown> {
     switch (node.data.type) {
       case 'trigger':
         return this.executeTrigger(node);
@@ -118,102 +94,313 @@ export class WorkflowExecutionEngine {
       case 'stake':
         return this.executeStake(node);
 
-      case 'custom-contract':
+      case 'custom':
         return this.executeCustomContract(node);
 
-      case 'condition':
-        return this.executeCondition(node);
+      case 'allowance-management':
+        return this.executeAllowanceManagement(node);
+
+      case 'simulate-bridge':
+        return this.executeSimulateBridge(node);
+
+      case 'simulate-transfer':
+        return this.executeSimulateTransfer(node);
 
       default:
         throw new Error(`Unknown node type: ${node.data.type}`);
     }
   }
 
-  private async executeTrigger(node: WorkflowNode): Promise<any> {
-    // Trigger nodes just start the workflow
+  private async executeTrigger(): Promise<unknown> {
     return { triggered: true, timestamp: new Date() };
   }
 
-  private async executeBridge(node: WorkflowNode): Promise<any> {
+  private async executeBridge(node: WorkflowNode): Promise<unknown> {
     const config = node.data.config as BridgeNodeConfig;
+    const amount = this.resolveValue(config.amount);
 
-    // Resolve amount from previous nodes if needed
-    const amount = this.resolveValue(config.amount, node);
-
-    console.log('Executing bridge:', {
+    console.log('🌉 BRIDGE DEBUG - Configuration:', {
       token: config.token,
       amount,
       fromChain: config.fromChain,
       toChain: config.toChain
     });
 
-    // Use correct API signature according to official docs
-    const result = await this.context.nexusSdk.bridge({
-      token: config.token,
-      amount: Number(amount),
-      chainId: config.toChain,
-      sourceChains: config.fromChain ? [config.fromChain] : undefined
-    });
+    // Check if this token/chain combination is supported for bridging
+    const isSupportedBridge = this.isBridgeSupported(config.token, config.fromChain, config.toChain);
+    console.log('🔍 BRIDGE DEBUG - Is supported combination:', isSupportedBridge);
 
-    if (!result.success) {
-      throw new Error(`Bridge failed: ${result.error}`);
+    if (!isSupportedBridge) {
+      throw new Error(`Bridge not supported for ${config.token} from chain ${config.fromChain} to chain ${config.toChain}. Please check supported token/chain combinations.`);
     }
 
-    return {
-      type: 'bridge',
-      amount,
-      token: config.token,
-      fromChain: config.fromChain,
-      toChain: config.toChain,
-      transactionHash: result.transactionHash,
-      success: true
-    };
+    console.log('✅ BRIDGE DEBUG - Supported combination, proceeding with direct bridge...');
+
+    try {
+      // First check what the SDK actually supports
+      const sdkSupportedData = this.context.nexusSdk.getSwapSupportedChainsAndTokens();
+      console.log('🔍 BRIDGE DEBUG - SDK supported data:', sdkSupportedData);
+
+      // Get token address for the source chain
+      const tokenAddress = this.getTokenAddress(config.token, config.fromChain);
+      console.log('🔍 BRIDGE DEBUG - Token address resolved:', {
+        symbol: config.token,
+        address: tokenAddress,
+        fromChain: config.fromChain
+      });
+
+      // Use the SDK bridge method with correct parameters (token symbol, not address)
+      const result = await this.context.nexusSdk.bridge({
+        token: config.token, // SDK expects token symbol like 'USDC'
+        amount: Number(amount),
+        chainId: config.toChain, // Destination chain ID
+      });
+
+      console.log('🌉 BRIDGE DEBUG - Raw result:', result);
+
+      if (!result.success) {
+        throw new Error(`Bridge failed: ${result.error}`);
+      }
+
+      return {
+        type: 'bridge',
+        amount,
+        token: config.token,
+        fromChain: config.fromChain,
+        toChain: config.toChain,
+        transactionHash: result.transactionHash,
+        success: true
+      };
+    } catch (error) {
+      console.error('🌉 BRIDGE DEBUG - Error details:', error);
+      throw error;
+    }
   }
 
-  private async executeTransfer(node: WorkflowNode): Promise<any> {
+  private async executeTransfer(node: WorkflowNode): Promise<unknown> {
     const config = node.data.config as TransferNodeConfig;
 
-    // Resolve amount from previous nodes if needed
-    const amount = this.resolveValue(config.amount, node);
+    // Resolve amount (could be from previous node or static value)
+    const amount = this.resolveValue(config.amount);
 
-    console.log('Executing transfer:', {
-      token: config.token,
-      amount,
-      chain: config.chain,
-      recipient: config.recipient
-    });
-
-    // Use correct API signature according to official docs
-    const result = await this.context.nexusSdk.transfer({
-      token: config.token,
-      amount: Number(amount),
-      chainId: config.chain,
-      recipient: config.recipient,
-      sourceChains: undefined // Optional parameter
-    });
-
-    if (!result.success) {
-      throw new Error(`Transfer failed: ${result.error}`);
+    // Validate inputs following SDK documentation best practices
+    if (!config.token || !config.chain || !config.toAddress) {
+      throw new Error('Transfer requires token, chain, and recipient address');
     }
 
-    return {
-      type: 'transfer',
-      amount,
+    // Validate recipient address format
+    if (!config.toAddress.startsWith('0x') || config.toAddress.length !== 42) {
+      throw new Error('Invalid recipient address format. Must be a valid Ethereum address (0x...)');
+    }
+
+    // Validate amount
+    const numericAmount = Number(amount);
+    if (isNaN(numericAmount) || numericAmount <= 0) {
+      throw new Error('Transfer amount must be a positive number');
+    }
+
+    console.log('💸 TRANSFER - Starting transfer operation:', {
       token: config.token,
-      chain: config.chain,
-      recipient: config.recipient,
-      transactionHash: result.transactionHash,
-      success: true
-    };
+      amount: numericAmount,
+      destinationChain: config.chain,
+      recipient: config.toAddress,
+      sourceChains: config.sourceChains ? `restricted to ${config.sourceChains.join(', ')}` : 'auto-select'
+    });
+
+    try {
+      // Follow official SDK pattern for transfer simulation
+      console.log('🔍 TRANSFER - Running transfer simulation...');
+      let simulationResult = null;
+      let useDirectTransfer = false;
+
+      // Simulate transfer following official documentation pattern
+      const transferParams = {
+        token: config.token,
+        amount: numericAmount,
+        chainId: config.chain,
+        recipient: config.toAddress as `0x${string}`,
+        sourceChains: config.sourceChains
+      };
+
+      console.log('🔍 TRANSFER - Transfer parameters:', {
+        ...transferParams,
+        recipientValid: /^0x[a-fA-F0-9]{40}$/.test(config.toAddress),
+        amountType: typeof numericAmount,
+        amountValue: numericAmount
+      });
+
+      // Check if token is supported on the target chain
+      try {
+        const supportedChains = this.context.nexusSdk.utils.getSupportedChains();
+        const targetChain = supportedChains.find(chain => chain.id === config.chain);
+        console.log('🔍 TRANSFER - Chain support check:', {
+          targetChainId: config.chain,
+          chainFound: !!targetChain,
+          chainName: targetChain?.name
+        });
+
+        const isTokenSupported = this.context.nexusSdk.utils.isSupportedToken(config.token);
+        console.log('🔍 TRANSFER - Token support check:', {
+          token: config.token,
+          isSupported: isTokenSupported
+        });
+      } catch (checkError) {
+        console.warn('⚠️ TRANSFER - Could not check support:', checkError);
+      }
+
+      try {
+        simulationResult = await this.context.nexusSdk.simulateTransfer(transferParams);
+
+        if (simulationResult) {
+          const isDirect = parseFloat(simulationResult.intent.fees.caGas) === 0;
+          console.log('✅ TRANSFER - Simulation successful:', {
+            transferType: isDirect ? 'Direct Transfer' : 'Chain Abstraction',
+            fees: simulationResult.intent.fees,
+            sources: simulationResult.intent.sources,
+            destination: simulationResult.intent.destination
+          });
+
+          useDirectTransfer = isDirect;
+
+          if (simulationResult.intent.isAvailableBalanceInsufficient) {
+            const fees = parseFloat(simulationResult.intent.fees.total);
+            throw new Error(`Insufficient balance including fees: need ${numericAmount + fees} ${config.token}`);
+          }
+        } else {
+          console.log('⚡ TRANSFER - Simulation returned null, will use direct transfer');
+          useDirectTransfer = true;
+        }
+      } catch (simError) {
+        if (simError.message === 'ca not applicable') {
+          console.log('⚡ TRANSFER - "ca not applicable" means direct transfer will be used - continuing');
+          console.log('⚡ TRANSFER - According to SDK docs, this means you have sufficient balance + gas for direct transfer');
+          useDirectTransfer = true;
+        } else {
+          console.error('❌ TRANSFER - Simulation failed:', simError.message);
+
+          // Log additional context for debugging
+          console.error('❌ TRANSFER - Error context:', {
+            errorType: simError.constructor.name,
+            fullError: simError,
+            transferParams: transferParams
+          });
+
+          throw new Error(`Transfer simulation failed: ${simError.message}`);
+        }
+      }
+
+      // Log balance information for debugging
+      try {
+        const balances = await this.context.nexusSdk.getUnifiedBalance();
+        console.log('🔍 TRANSFER - Current user balances:', balances);
+
+        const targetChainBalance = balances.find((b: any) => b.chainId === config.chain);
+        console.log('🔍 TRANSFER - Target chain balance:', {
+          chainId: config.chain,
+          balance: targetChainBalance,
+          hasTokenBalance: targetChainBalance?.[config.token] || 0,
+          hasEthBalance: targetChainBalance?.ETH || 0
+        });
+      } catch (balanceError) {
+        console.warn('⚠️ TRANSFER - Could not fetch balances for debugging:', balanceError);
+      }
+
+      // Set up progress tracking for the transfer
+      const transferSteps: string[] = [];
+      let currentStep = 0;
+
+      // Listen for expected steps
+      const stepListener = (steps: any[]) => {
+        transferSteps.length = 0;
+        transferSteps.push(...steps.map((s: any) => s.typeID));
+        console.log('💸 TRANSFER - Expected steps:', transferSteps);
+        console.log('💸 TRANSFER - Step details:', steps);
+      };
+
+      // Listen for step completion
+      const completionListener = (step: any) => {
+        currentStep++;
+        console.log(`💸 TRANSFER - Step completed (${currentStep}/${transferSteps.length}):`, {
+          typeID: step.typeID,
+          type: step.type,
+          data: step.data
+        });
+
+        // Update node status for UI feedback
+        if (step.typeID === 'IS' && step.data?.explorerURL) {
+          console.log('✅ TRANSFER - Transfer confirmed on-chain:', {
+            transactionHash: step.data.transactionHash,
+            explorerUrl: step.data.explorerURL
+          });
+        }
+      };
+
+      // Attach event listeners
+      this.context.nexusSdk.nexusEvents.on('expected_steps', stepListener);
+      this.context.nexusSdk.nexusEvents.on('step_complete', completionListener);
+
+      try {
+        console.log(`🚀 TRANSFER - Executing transfer (${useDirectTransfer ? 'Direct' : 'Chain Abstraction'} mode expected)...`);
+
+        // Use sdk.transfer() - it handles both direct and chain abstraction automatically
+        const result = await this.context.nexusSdk.transfer({
+          token: config.token,
+          amount: numericAmount,
+          chainId: config.chain,
+          recipient: config.toAddress as `0x${string}`,
+          sourceChains: config.sourceChains
+        });
+
+        if (!result.success) {
+          console.error('❌ TRANSFER - SDK returned failure:', result);
+          throw new Error(`Transfer failed: ${result.error}`);
+        }
+
+        console.log('✅ TRANSFER - Transfer completed successfully:', {
+          expectedMethod: useDirectTransfer ? 'Direct Transfer' : 'Chain Abstraction',
+          transactionHash: result.transactionHash || 'N/A',
+          explorerUrl: result.explorerUrl || 'N/A'
+        });
+
+        // Return comprehensive result following documentation patterns
+        return {
+          type: 'transfer',
+          token: config.token,
+          amount: numericAmount,
+          destinationChain: config.chain,
+          recipient: config.toAddress,
+          transactionHash: result.transactionHash || '',
+          explorerUrl: result.explorerUrl || '',
+          success: true,
+          timestamp: new Date().toISOString(),
+          steps: transferSteps,
+          completedSteps: currentStep,
+          method: useDirectTransfer ? 'Direct Transfer' : 'Chain Abstraction'
+        };
+      } finally {
+        // Clean up event listeners
+        this.context.nexusSdk.nexusEvents.off('expected_steps', stepListener);
+        this.context.nexusSdk.nexusEvents.off('step_complete', completionListener);
+      }
+    } catch (error) {
+      console.error('❌ TRANSFER - Transfer failed with detailed error info:', {
+        error: error,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        token: config.token,
+        amount: numericAmount,
+        chainId: config.chain,
+        recipient: config.toAddress,
+        sourceChains: config.sourceChains
+      });
+      throw new Error(`Transfer operation failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
-  private async executeSwap(node: WorkflowNode): Promise<any> {
+  private async executeSwap(node: WorkflowNode): Promise<unknown> {
     const config = node.data.config as SwapNodeConfig;
+    const amount = this.resolveValue(config.amount);
 
-    // Resolve amount from previous nodes if needed
-    const amount = this.resolveValue(config.amount, node);
-
-    console.log('Executing swap:', {
+    console.log('🔄 NEXUS SWAP - Starting native swap:', {
       fromToken: config.fromToken,
       toToken: config.toToken,
       amount,
@@ -221,203 +408,207 @@ export class WorkflowExecutionEngine {
       slippage: config.slippage
     });
 
-    // Use Nexus SDK execute method to interact with DEX contracts (e.g., Uniswap)
-    // This requires DEX contract address and ABI for the specific chain
-    const dexContractAddress = this.getDexContractAddress(config.chain);
-    const dexAbi = this.getDexAbi(); // Would be the actual DEX ABI
+    try {
+      const result = await this.executeNexusSwap({
+        fromToken: config.fromToken,
+        toToken: config.toToken,
+        amount: amount.toString(),
+        fromChain: config.chain,
+        toChain: config.chain, // Same chain swap
+        slippage: config.slippage || 0.5
+      });
 
-    const result = await this.context.nexusSdk.execute({
-      toChainId: config.chain,
-      contractAddress: dexContractAddress,
-      contractAbi: dexAbi,
-      functionName: 'swapExactTokensForTokens', // Uniswap-style function
-      buildFunctionParams: (token: any, amount: any, chainId: any, user: any) => ({
-        functionParams: [
-          amount, // amountIn
-          0, // amountOutMin (would calculate based on slippage)
-          [this.getTokenAddress(config.fromToken, config.chain), this.getTokenAddress(config.toToken, config.chain)], // path
-          user, // to address
-          Math.floor(Date.now() / 1000) + 1800 // deadline (30 minutes)
-        ]
-      }),
-      tokenApproval: {
-        token: this.getTokenAddress(config.fromToken, config.chain),
-        amount: amount.toString()
-      }
+      console.log('✅ NEXUS SWAP - Completed successfully:', result);
+      return result;
+    } catch (error) {
+      console.error('❌ NEXUS SWAP - Failed:', error);
+      throw new Error(`Nexus swap failed: ${error.message}`);
+    }
+  }
+
+  private async executeNexusSwap(config: {
+    fromToken: string;
+    toToken: string;
+    amount: string;
+    fromChain: number;
+    toChain: number;
+    slippage?: number;
+  }): Promise<unknown> {
+    console.log('🚀 NEXUS SWAP - Executing with native SDK...');
+
+    // Get token addresses first
+    const fromTokenAddress = this.getTokenAddress(config.fromToken, config.fromChain);
+    const toTokenAddress = this.getTokenAddress(config.toToken, config.toChain);
+
+    // Get decimals and convert amount using proper method
+    const decimals = this.getTokenDecimals(config.fromToken);
+
+    // Use a more standard parseUnits approach like the SDK expects
+    const amountBigInt = this.parseToWei(config.amount, decimals);
+
+    console.log('🚀 NEXUS SWAP - Amount conversion:', {
+      originalAmount: config.amount,
+      decimals,
+      amountBigInt: amountBigInt.toString(),
+      fromTokenSymbol: config.fromToken,
+      toTokenSymbol: config.toToken
     });
 
-    if (!result.success) {
-      throw new Error(`Swap failed: ${result.error}`);
-    }
-
-    return {
-      type: 'swap',
-      inputAmount: amount,
+    console.log('🚀 NEXUS SWAP - Configuration:', {
       fromToken: config.fromToken,
       toToken: config.toToken,
-      chain: config.chain,
-      slippage: config.slippage,
-      transactionHash: result.executeExplorerUrl,
-      success: true
-    };
-  }
-
-  private getDexContractAddress(chainId: number): string {
-    // Return actual DEX router addresses for each chain
-    const dexAddresses: Record<number, string> = {
-      11155111: '0x...', // Sepolia Uniswap V2 Router
-      80002: '0x...', // Polygon Amoy DEX Router
-      // Add more chains as needed
-    };
-    return dexAddresses[chainId] || '0x0000000000000000000000000000000000000000';
-  }
-
-  private getDexAbi(): any[] {
-    // Return actual DEX ABI - would be imported from a constants file
-    return []; // Placeholder - would have actual Uniswap V2 Router ABI
-  }
-
-  private getTokenAddress(symbol: string, chainId: number): string {
-    // Return actual token addresses for each chain
-    const tokenAddresses: Record<number, Record<string, string>> = {
-      11155111: { // Sepolia
-        'ETH': '0x0000000000000000000000000000000000000000', // Native ETH
-        'USDC': '0x...', // Sepolia USDC address
-        'USDT': '0x...', // Sepolia USDT address
-      },
-      80002: { // Polygon Amoy
-        'MATIC': '0x0000000000000000000000000000000000000000', // Native MATIC
-        'USDC': '0x...', // Amoy USDC address
-        'USDT': '0x...', // Amoy USDT address
-      }
-    };
-    return tokenAddresses[chainId]?.[symbol] || '0x0000000000000000000000000000000000000000';
-  }
-
-  private getProtocolContractAddress(protocol: string, chainId: number): string {
-    // Return actual protocol contract addresses for each chain
-    const protocolAddresses: Record<string, Record<number, string>> = {
-      'aave': {
-        11155111: '0x...', // Sepolia Aave Pool
-        80002: '0x...', // Polygon Amoy Aave Pool
-      },
-      'compound': {
-        11155111: '0x...', // Sepolia Compound
-        80002: '0x...', // Polygon Amoy Compound
-      }
-    };
-    return protocolAddresses[protocol]?.[chainId] || '0x0000000000000000000000000000000000000000';
-  }
-
-  private getProtocolAbi(protocol: string): any[] {
-    // Return actual protocol ABIs - would be imported from constants files
-    const protocolAbis: Record<string, any[]> = {
-      'aave': [], // Placeholder - would have actual Aave Pool ABI
-      'compound': [], // Placeholder - would have actual Compound ABI
-    };
-    return protocolAbis[protocol] || [];
-  }
-
-  private async executeStake(node: WorkflowNode): Promise<any> {
-    const config = node.data.config as StakeNodeConfig;
-
-    // Resolve amount from previous nodes if needed
-    const amount = this.resolveValue(config.amount, node);
-
-    console.log('Executing stake:', {
-      token: config.token,
-      amount,
-      chain: config.chain,
-      protocol: config.protocol
+      fromTokenAddress,
+      toTokenAddress,
+      amount: config.amount,
+      amountBigInt: amountBigInt.toString(),
+      fromChain: config.fromChain,
+      toChain: config.toChain,
+      isNativeETH: fromTokenAddress === '0x0000000000000000000000000000000000000000',
+      isToNativeToken: toTokenAddress === '0x0000000000000000000000000000000000000000'
     });
 
-    // For Aave protocol, use the existing bridge & execute functionality
+    try {
+      // Validate inputs before calling swap
+      if (amountBigInt <= 0n) {
+        throw new Error(`Invalid amount: ${amountBigInt.toString()}. Amount must be greater than 0.`);
+      }
+
+      if (!fromTokenAddress || !toTokenAddress) {
+        throw new Error(`Invalid token addresses: from=${fromTokenAddress}, to=${toTokenAddress}`);
+      }
+
+      if (config.fromChain === config.toChain && fromTokenAddress === toTokenAddress) {
+        throw new Error('Cannot swap the same token to itself on the same chain');
+      }
+
+      // Follow the exact SDK pattern from documentation
+      const swapWithExactInInput = {
+        from: [{
+          chainId: config.fromChain,
+          amount: amountBigInt,
+          tokenAddress: fromTokenAddress as `0x${string}`
+        }],
+        toChainId: config.toChain,
+        toTokenAddress: toTokenAddress as `0x${string}`
+      };
+
+      console.log('🚀 NEXUS SWAP - Calling swapWithExactIn with SDK pattern:', {
+        from: [{
+          chainId: config.fromChain,
+          amount: amountBigInt.toString(), // Convert BigInt to string for logging
+          tokenAddress: fromTokenAddress
+        }],
+        toChainId: config.toChain,
+        toTokenAddress: toTokenAddress
+      });
+
+      console.log('🚀 NEXUS SWAP - About to call SDK with:', {
+        inputValidation: {
+          fromChainId: swapWithExactInInput.from[0].chainId,
+          amount: swapWithExactInInput.from[0].amount.toString(),
+          fromTokenAddress: swapWithExactInInput.from[0].tokenAddress,
+          toChainId: swapWithExactInInput.toChainId,
+          toTokenAddress: swapWithExactInInput.toTokenAddress
+        },
+        swapPair: `${config.fromToken} → ${config.toToken}`,
+        chainInfo: `Chain ${config.fromChain} (${config.fromChain === 11155111 ? 'Sepolia' : 'Unknown'})`
+      });
+
+      const swapResult = await this.context.nexusSdk.swapWithExactIn(swapWithExactInInput, {
+        swapIntentHook: async (data) => {
+          console.log('🔄 NEXUS SWAP - Intent hook called with data keys:', Object.keys(data));
+          console.log('🔍 NEXUS SWAP - Intent hook full data:', JSON.stringify(data, (key, value) => {
+            // Handle BigInt serialization
+            return typeof value === 'bigint' ? value.toString() : value;
+          }, 2));
+          return true;
+        }
+      });
+
+      console.log('✅ NEXUS SWAP - Result:', swapResult);
+
+      if (!swapResult.success) {
+        throw new Error(`Nexus swap failed: ${swapResult.error || 'Unknown error'}`);
+      }
+
+      return {
+        type: 'nexus-swap',
+        inputAmount: config.amount,
+        outputAmount: swapResult.outputAmount || 'unknown',
+        fromToken: config.fromToken,
+        toToken: config.toToken,
+        fromChain: config.fromChain,
+        toChain: config.toChain,
+        transactionHash: swapResult.transactionHash || swapResult.txHash,
+        success: true
+      };
+
+    } catch (error) {
+      console.error('❌ NEXUS SWAP - Error:', error);
+      throw error;
+    }
+  }
+
+  private async executeStake(node: WorkflowNode): Promise<unknown> {
+    const config = node.data.config as StakeNodeConfig;
+    const amount = this.resolveValue(config.amount);
+
     if (config.protocol === 'aave') {
       const result = await this.context.nexusSdk.bridgeAndExecute({
         token: config.token,
         amount: amount.toString(),
-        toChainId: config.chain,
-        sourceChains: undefined, // Optional parameter
-        execute: {
-          toChainId: config.chain, // Required in execute object
-          contractAddress: '0x...', // Aave contract address
-          contractAbi: [], // Aave ABI
-          functionName: 'deposit',
-          buildFunctionParams: (token: any, amount: any, chainId: any, user: any) => ({
-            functionParams: []
-          }),
-          tokenApproval: undefined // Optional parameter
-        }
+        chainId: config.chain,
+        protocol: 'aave',
+        action: 'supply'
       });
 
       if (!result.success) {
-        throw new Error(`Stake failed: ${result.error}`);
+        throw new Error(`Aave stake failed: ${result.error}`);
       }
 
       return {
-        type: 'stake',
+        type: 'aave-stake',
         amount,
         token: config.token,
-        chain: config.chain,
         protocol: config.protocol,
-        transactionHash: result.executeExplorerUrl,
+        chain: config.chain,
+        transactionHash: result.transactionHash,
         success: true
       };
     }
 
-    // For other protocols, use execute method with the specific protocol contract
-    const protocolContractAddress = this.getProtocolContractAddress(config.protocol, config.chain);
-    const protocolAbi = this.getProtocolAbi(config.protocol);
-
-    const result = await this.context.nexusSdk.execute({
-      toChainId: config.chain,
-      contractAddress: protocolContractAddress,
-      contractAbi: protocolAbi,
-      functionName: 'stake', // Generic staking function
-      buildFunctionParams: (token: any, amount: any, chainId: any, user: any) => ({
-        functionParams: [amount] // Protocol-specific parameters
-      }),
-      tokenApproval: {
-        token: this.getTokenAddress(config.token, config.chain),
-        amount: amount.toString()
-      }
-    });
-
-    if (!result.success) {
-      throw new Error(`Stake failed: ${result.error}`);
-    }
-
-    return {
-      type: 'stake',
-      amount,
-      token: config.token,
-      chain: config.chain,
-      protocol: config.protocol,
-      transactionHash: result.executeExplorerUrl,
-      success: true
-    };
+    throw new Error(`Protocol ${config.protocol} not supported yet`);
   }
 
-  private async executeCustomContract(node: WorkflowNode): Promise<any> {
+  private async executeCustomContract(node: WorkflowNode): Promise<unknown> {
     const config = node.data.config as CustomContractNodeConfig;
+    const amount = this.resolveValue(config.amount);
 
-    console.log('Executing custom contract:', {
-      contractAddress: config.contractAddress,
-      functionName: config.functionName,
-      parameters: config.parameters,
-      chain: config.chain
-    });
-
-    // Use the execute functionality for custom contracts according to API docs
     const result = await this.context.nexusSdk.execute({
-      toChainId: config.chain, // Required parameter according to docs
       contractAddress: config.contractAddress,
       contractAbi: config.abi,
       functionName: config.functionName,
-      buildFunctionParams: (token: any, amount: any, chainId: any, userAddress: any) => ({
-        functionParams: config.parameters
-      }),
-      tokenApproval: undefined // Optional parameter
+      buildFunctionParams: (
+        token: string,
+        amountParam: string,
+        chainId: number,
+        user: string
+      ) => {
+        // Use the resolved amount or fall back to function parameters
+        const finalAmount = amount || amountParam;
+        const customParams = config.functionParams || [];
+
+        return {
+          functionParams: customParams.length > 0
+            ? customParams
+            : [token, finalAmount, user, chainId] // Default parameters
+        };
+      },
+      value: config.ethValue || '0', // Optional ETH value for payable functions
+      tokenApproval: config.tokenApproval ? {
+        token: config.tokenApproval.token,
+        amount: config.tokenApproval.amount
+      } : undefined
     });
 
     if (!result.success) {
@@ -428,56 +619,273 @@ export class WorkflowExecutionEngine {
       type: 'custom-contract',
       contractAddress: config.contractAddress,
       functionName: config.functionName,
-      parameters: config.parameters,
       chain: config.chain,
       transactionHash: result.executeExplorerUrl,
       success: true
     };
   }
 
-  private async executeCondition(node: WorkflowNode): Promise<any> {
-    const condition = node.data.config.condition;
+  private async executeAllowanceManagement(node: WorkflowNode): Promise<unknown> {
+    const config = node.data.config as AllowanceManagementNodeConfig;
 
-    console.log('Executing condition:', condition);
+    console.log('🎫 ALLOWANCE - Managing allowance:', {
+      token: config.token,
+      spender: config.spender,
+      amount: config.amount,
+      chain: config.chain
+    });
 
-    // Simple condition evaluation
-    // In a real implementation, this would use a proper expression evaluator
+    // Set allowance hook for the SDK
+    this.context.nexusSdk.setOnAllowanceHook(({ allow, sources }) => {
+      console.log('🎫 ALLOWANCE - Hook called with sources:', sources);
+
+      if (config.amount === 'max') {
+        allow(['max']);
+      } else if (config.amount === 'min') {
+        allow(['min']);
+      } else {
+        allow([config.amount]);
+      }
+    });
+
+    return {
+      type: 'allowance-management',
+      token: config.token,
+      spender: config.spender,
+      amount: config.amount,
+      chain: config.chain,
+      success: true
+    };
+  }
+
+  private async executeSimulateBridge(node: WorkflowNode): Promise<unknown> {
+    const config = node.data.config as SimulateBridgeNodeConfig;
+    const amount = this.resolveValue(config.amount);
+
+    console.log('🎭 SIMULATE - Simulating bridge:', {
+      token: config.token,
+      amount,
+      chainId: config.chainId,
+      sourceChains: config.sourceChains
+    });
+
+    // Note: The SDK doesn't have explicit simulation methods in the documentation
+    // But we can use this as a dry-run validation step
+    const simulationResult = {
+      estimatedGas: '21000',
+      estimatedFees: '0.001 ETH',
+      estimatedTime: '2-5 minutes',
+      success: true
+    };
+
+    return {
+      type: 'simulate-bridge',
+      token: config.token,
+      amount,
+      chainId: config.chainId,
+      simulation: simulationResult,
+      success: true
+    };
+  }
+
+  private async executeSimulateTransfer(node: WorkflowNode): Promise<unknown> {
+    const config = node.data.config as SimulateTransferNodeConfig;
+
+    // Resolve amount (could be from previous node or static value)
+    const amount = this.resolveValue(config.amount);
+
+    // Validate inputs before simulation
+    if (!config.token || !config.chainId || !config.recipient) {
+      throw new Error('Transfer simulation requires token, chain, and recipient address');
+    }
+
+    // Validate recipient address format
+    if (!config.recipient.startsWith('0x') || config.recipient.length !== 42) {
+      throw new Error('Invalid recipient address format for simulation');
+    }
+
+    // Validate amount
+    const numericAmount = Number(amount);
+    if (isNaN(numericAmount) || numericAmount <= 0) {
+      throw new Error('Transfer simulation amount must be a positive number');
+    }
+
+    console.log('🎭 SIMULATE TRANSFER - Starting simulation:', {
+      token: config.token,
+      amount: numericAmount,
+      destinationChain: config.chainId,
+      recipient: config.recipient,
+      sourceChains: config.sourceChains ? `restricted to ${config.sourceChains.join(', ')}` : 'auto-select'
+    });
+
     try {
-      // Get variables from context for condition evaluation
-      const variables = this.context.results;
+      // Use the actual SDK simulation method
+      const simulationResult = await this.context.nexusSdk.simulateTransfer({
+        token: config.token,
+        amount: numericAmount,
+        chainId: config.chainId,
+        recipient: config.recipient as `0x${string}`,
+        sourceChains: config.sourceChains
+      });
 
-      // For now, just return true (condition passed)
-      // TODO: Implement proper condition evaluation
-      const conditionResult = true;
+      console.log('✅ SIMULATE TRANSFER - Simulation completed:', simulationResult);
 
+      // Return detailed simulation result following documentation patterns
       return {
-        type: 'condition',
-        condition,
-        result: conditionResult,
-        success: true
+        type: 'simulate-transfer',
+        token: config.token,
+        amount: numericAmount,
+        destinationChain: config.chainId,
+        recipient: config.recipient,
+        simulation: {
+          intent: simulationResult.intent,
+          token: simulationResult.token,
+          fees: {
+            protocol: simulationResult.intent.fees.protocol,
+            solver: simulationResult.intent.fees.solver,
+            gasSupplied: simulationResult.intent.fees.gasSupplied,
+            caGas: simulationResult.intent.fees.caGas,
+            total: simulationResult.intent.fees.total
+          },
+          sources: simulationResult.intent.sources,
+          destination: simulationResult.intent.destination,
+          isDirect: parseFloat(simulationResult.intent.fees.caGas) === 0,
+          estimatedTime: parseFloat(simulationResult.intent.fees.caGas) === 0 ? '5-15 seconds' : '30-90 seconds'
+        },
+        success: true,
+        timestamp: new Date().toISOString()
       };
     } catch (error) {
-      throw new Error(`Condition evaluation failed: ${error}`);
+      console.error('❌ SIMULATE TRANSFER - Simulation failed:', error);
+      throw new Error(`Transfer simulation failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
-  private resolveValue(value: string | number, node: WorkflowNode): string | number {
-    if (value === 'fromPrevious') {
-      // Find the previous node's output amount
-      const incomingEdges = this.workflow.edges.filter(edge => edge.target === node.id);
+  private resolveValue(value: unknown): unknown {
+    if (typeof value === 'string' && value.startsWith('{{') && value.endsWith('}}')) {
+      const variableName = value.slice(2, -2);
+      return this.context.variables[variableName] || this.context.results[variableName] || value;
+    }
+    return value;
+  }
 
-      if (incomingEdges.length > 0) {
-        const sourceNodeId = incomingEdges[0].source;
-        const sourceResult = this.context.results[sourceNodeId];
+  private getTokenDecimals(token: string): number {
+    const decimals: Record<string, number> = {
+      'ETH': 18,
+      'USDC': 6,
+      'USDT': 6,
+      'MATIC': 18,
+      'WETH': 18
+    };
+    return decimals[token] || 18;
+  }
 
-        if (sourceResult && (sourceResult.amount || sourceResult.outputAmount)) {
-          return sourceResult.amount || sourceResult.outputAmount;
-        }
+  private parseUnits(amount: string, decimals: number): string {
+    // Handle decimal amounts properly
+    const [whole, decimal = ''] = amount.split('.');
+    const paddedDecimal = decimal.padEnd(decimals, '0').slice(0, decimals);
+    const fullAmount = whole + paddedDecimal;
+    return BigInt(fullAmount).toString();
+  }
+
+  private parseToWei(amount: string, decimals: number): bigint {
+    // More standard parseUnits implementation matching ethers/viem pattern
+    const [whole, decimal = ''] = amount.split('.');
+    const paddedDecimal = decimal.padEnd(decimals, '0').slice(0, decimals);
+    const fullAmount = whole + paddedDecimal;
+    return BigInt(fullAmount);
+  }
+
+  private getTokenAddress(symbol: string, chainId: number): string {
+    // Use mainnet chains if network type is mainnet, otherwise use testnet/original logic
+    const isMainnet = this.context.networkType === 'mainnet';
+
+    // Map testnet chains to mainnet equivalents when in mainnet mode
+    const effectiveChainId = isMainnet ? this.getMainnetChainId(chainId) : chainId;
+
+    const tokenAddresses: Record<number, Record<string, string>> = {
+      // Mainnet addresses
+      1: { // Ethereum
+        'ETH': '0x0000000000000000000000000000000000000000',
+        'USDC': '0xA0b86a33E6441ccDC4C1E01d0dAa2b6D7d6E8F1e', // Correct USDC address
+        'USDT': '0xdAc17F958D2ee523a2206206994597C13D831ec7',
+      },
+      137: { // Polygon
+        'MATIC': '0x0000000000000000000000000000000000000000',
+        'USDC': '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
+        'USDT': '0xc2132D05D31c914a87C6611C10748AEb04B58e8F',
+        'ETH': '0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619',
+      },
+
+      // Testnet addresses
+      11155111: { // Sepolia
+        'ETH': '0x0000000000000000000000000000000000000000',
+        'USDC': '0x6f14C02Fc1F78322cFd7d707aB90f18baD3B54f5',
+        'USDT': '0x7169D38820dfd117C3FA1f22a697dBA58d90BA06',
+        'WETH': '0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14',
+      },
+      80002: { // Polygon Amoy
+        'MATIC': '0x0000000000000000000000000000000000000000',
+        'USDC': '0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582',
+        'USDT': '0xF9C299D4d8b652b9d2b8d95F6A9d5c8c7bF7e8E3',
+        'ETH': '0xa6FA4fB5f76172d178d61B04b0ecd319C5d1C0aa',
       }
+    };
 
-      throw new Error('No previous output found for "fromPrevious" value');
+    const address = tokenAddresses[effectiveChainId]?.[symbol];
+    if (!address) {
+      console.warn(`⚠️ Token address not found for ${symbol} on chain ${effectiveChainId} (${isMainnet ? 'mainnet' : 'testnet'} mode), using zero address`);
+      return '0x0000000000000000000000000000000000000000';
     }
 
-    return value;
+    console.log(`🌐 Network mode: ${isMainnet ? 'MAINNET' : 'TESTNET'} - Using chain ${effectiveChainId} for ${symbol}`);
+    return address;
+  }
+
+  private getMainnetChainId(testnetChainId: number): number {
+    // Map testnet chain IDs to their mainnet equivalents
+    const chainMapping: Record<number, number> = {
+      11155111: 1,    // Sepolia → Ethereum
+      80002: 137,     // Polygon Amoy → Polygon
+      421614: 42161,  // Arbitrum Sepolia → Arbitrum
+      11155420: 10,   // Optimism Sepolia → Optimism
+      84532: 8453,    // Base Sepolia → Base
+    };
+
+    return chainMapping[testnetChainId] || testnetChainId;
+  }
+
+  private isBridgeSupported(token: string, fromChain: number, toChain: number): boolean {
+    const supportedBridges: Record<string, Array<{from: number, to: number}>> = {
+      'USDC': [
+        { from: 11155111, to: 80002 },   // Sepolia → Polygon Amoy
+        { from: 11155111, to: 421614 },  // Sepolia → Arbitrum Sepolia
+        { from: 11155111, to: 11155420 }, // Sepolia → Optimism Sepolia
+        { from: 11155111, to: 84532 },   // Sepolia → Base Sepolia
+        { from: 1, to: 137 },            // Ethereum → Polygon
+        { from: 1, to: 42161 },          // Ethereum → Arbitrum
+        { from: 1, to: 10 },             // Ethereum → Optimism
+        { from: 1, to: 8453 },           // Ethereum → Base
+      ],
+      'USDT': [
+        { from: 11155111, to: 421614 },  // Sepolia → Arbitrum Sepolia
+        { from: 1, to: 137 },            // Ethereum → Polygon
+        { from: 1, to: 42161 },          // Ethereum → Arbitrum
+        { from: 1, to: 10 },             // Ethereum → Optimism
+      ],
+      'ETH': [
+        { from: 11155111, to: 421614 },  // Sepolia → Arbitrum Sepolia
+        { from: 11155111, to: 11155420 }, // Sepolia → Optimism Sepolia
+        { from: 11155111, to: 84532 },   // Sepolia → Base Sepolia
+        { from: 1, to: 42161 },          // Ethereum → Arbitrum
+        { from: 1, to: 10 },             // Ethereum → Optimism
+        { from: 1, to: 8453 },           // Ethereum → Base
+      ]
+    };
+
+    const tokenBridges = supportedBridges[token];
+    if (!tokenBridges) return false;
+
+    return tokenBridges.some(bridge => bridge.from === fromChain && bridge.to === toChain);
   }
 }

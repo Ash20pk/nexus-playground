@@ -9,19 +9,20 @@ import { Separator } from '@/components/ui/separator';
 import { Trash2, Unlink } from 'lucide-react';
 import { WorkflowNode } from '@/types/workflow';
 import { useWorkflowStore } from '@/store/workflowStore';
-import { SUPPORTED_CHAINS_IDS, SUPPORTED_TOKENS } from '@avail-project/nexus-core';
-import { getAvailableChains, SUPPORTED_TOKENS as LOCAL_SUPPORTED_TOKENS } from '@/constants/networks';
+import { SUPPORTED_CHAINS_IDS, SUPPORTED_TOKENS } from '@/types/workflow';
+import { useNetworkOptions } from '@/hooks/useNetworkOptions';
+import { useChainTokens } from '@/hooks/useChainTokens';
+import { TransferPreview } from './TransferPreview';
+
+// Ethereum address validation utility
+const isValidEthereumAddress = (address: string): boolean => {
+  return /^0x[a-fA-F0-9]{40}$/.test(address);
+};
 
 interface NodeConfigPanelProps {
   node?: WorkflowNode;
   onDeleteEdge: (edgeId: string) => void;
 }
-
-// Use testnet by default for development
-const IS_TESTNET = process.env.NEXT_PUBLIC_ENABLE_TESTNET === 'true';
-const AVAILABLE_CHAINS = getAvailableChains(IS_TESTNET);
-
-const TOKEN_OPTIONS = LOCAL_SUPPORTED_TOKENS;
 
 // Separate component for balance check configuration
 interface BalanceCheckConfigProps {
@@ -79,8 +80,8 @@ const BalanceCheckConfig: React.FC<BalanceCheckConfigProps> = ({ node, onConfigU
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {Object.entries(AVAILABLE_CHAINS).map(([id, chain]) => (
-              <SelectItem key={id} value={id}>
+            {chainOptions.map((chain) => (
+              <SelectItem key={chain.id} value={chain.id.toString()}>
                 {chain.name}
               </SelectItem>
             ))}
@@ -98,9 +99,9 @@ const BalanceCheckConfig: React.FC<BalanceCheckConfigProps> = ({ node, onConfigU
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {TOKEN_OPTIONS.map((token) => (
-              <SelectItem key={token} value={token}>
-                {token}
+            {tokenOptions.map((token) => (
+              <SelectItem key={token.symbol} value={token.symbol}>
+                {token.symbol}
               </SelectItem>
             ))}
           </SelectContent>
@@ -109,11 +110,25 @@ const BalanceCheckConfig: React.FC<BalanceCheckConfigProps> = ({ node, onConfigU
 
       <div>
         <Label>Address</Label>
-        <Input
-          value={localConfig.address}
-          onChange={(e) => handleSelectChange('address', e.target.value)}
-          placeholder="0x... or 'fromPrevious'"
-        />
+        {localConfig.address === 'fromPrevious' ? (
+          <div className="flex items-center gap-2">
+            <Input value={"From previous step"} disabled />
+            <Button size="sm" variant="outline" onClick={() => handleSelectChange('address', '')}>
+              Use custom
+            </Button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <Input
+              value={localConfig.address}
+              onChange={(e) => handleSelectChange('address', e.target.value)}
+              placeholder="0x..."
+            />
+            <Button size="sm" variant="outline" onClick={() => handleSelectChange('address', 'fromPrevious')}>
+              From previous
+            </Button>
+          </div>
+        )}
         <p className="text-xs text-gray-500 mt-1">
           Use 'fromPrevious' to check address from previous node
         </p>
@@ -156,6 +171,13 @@ const BalanceCheckConfig: React.FC<BalanceCheckConfigProps> = ({ node, onConfigU
 
 export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDeleteEdge }) => {
   const { updateNode, deleteNode, currentWorkflow } = useWorkflowStore();
+  const { networkType, chainOptions, tokenOptions, isTestnet } = useNetworkOptions();
+
+  // Get dynamic tokens for different chain configurations
+  const bridgeFromChainTokens = useChainTokens(node?.data.config.fromChain);
+  const bridgeToChainTokens = useChainTokens(node?.data.config.toChain);
+  const transferChainTokens = useChainTokens(node?.data.config.chain);
+  const swapChainTokens = useChainTokens(node?.data.config.chain);
 
   if (!node) {
     return (
@@ -224,6 +246,33 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
         return (
           <div className="space-y-4">
             <div>
+              <Label>From Chain</Label>
+              <Select
+                value={localConfig.fromChain?.toString()}
+                onValueChange={(value) => {
+                  const chainId = parseInt(value);
+                  handleSelectChange('fromChain', chainId);
+
+                  // Auto-select first available token for the new chain if current token is not supported
+                  if (bridgeFromChainTokens.defaultToken && !bridgeFromChainTokens.isTokenValid(localConfig.token)) {
+                    handleSelectChange('token', bridgeFromChainTokens.defaultToken);
+                  }
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {chainOptions.map((chain) => (
+                    <SelectItem key={chain.id} value={chain.id.toString()}>
+                      {chain.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div>
               <Label>Token</Label>
               <Select
                 value={localConfig.token}
@@ -233,41 +282,41 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {TOKEN_OPTIONS.map((token) => (
-                    <SelectItem key={token} value={token}>
-                      {token}
+                  {bridgeFromChainTokens.availableTokens.map((token) => (
+                    <SelectItem key={token.symbol} value={token.symbol}>
+                      {token.symbol}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              {bridgeFromChainTokens.availableTokens.length === 0 && (
+                <p className="text-sm text-muted-foreground mt-1">
+                  No tokens available for selected chain
+                </p>
+              )}
             </div>
 
             <div>
               <Label>Amount</Label>
-              <Input
-                value={node.data.config.amount}
-                onChange={(e) => handleConfigUpdate('amount', e.target.value)}
-                placeholder="Amount to bridge"
-              />
-            </div>
-
-            <div>
-              <Label>From Chain</Label>
-              <Select
-                value={localConfig.fromChain?.toString()}
-                onValueChange={(value) => handleSelectChange('fromChain', parseInt(value))}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {Object.entries(AVAILABLE_CHAINS).map(([id, chain]) => (
-                    <SelectItem key={id} value={id}>
-                      {chain.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              {localConfig.amount === 'fromPrevious' ? (
+                <div className="flex items-center gap-2">
+                  <Input value={"From previous step"} disabled />
+                  <Button size="sm" variant="outline" onClick={() => handleSelectChange('amount', '')}>
+                    Use custom
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={localConfig.amount}
+                    onChange={(e) => handleSelectChange('amount', e.target.value)}
+                    placeholder="Amount to bridge"
+                  />
+                  <Button size="sm" variant="outline" onClick={() => handleSelectChange('amount', 'fromPrevious')}>
+                    From previous
+                  </Button>
+                </div>
+              )}
             </div>
 
             <div>
@@ -280,8 +329,8 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {Object.entries(AVAILABLE_CHAINS).map(([id, chain]) => (
-                    <SelectItem key={id} value={id}>
+                  {chainOptions.map((chain) => (
+                    <SelectItem key={chain.id} value={chain.id.toString()}>
                       {chain.name}
                     </SelectItem>
                   ))}
@@ -298,14 +347,22 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
               <Label>Chain</Label>
               <Select
                 value={localConfig.chain?.toString()}
-                onValueChange={(value) => handleSelectChange('chain', parseInt(value))}
+                onValueChange={(value) => {
+                  const chainId = parseInt(value);
+                  handleSelectChange('chain', chainId);
+
+                  // Auto-select first available token for the new chain if current token is not supported
+                  if (transferChainTokens.defaultToken && !transferChainTokens.isTokenValid(localConfig.token)) {
+                    handleSelectChange('token', transferChainTokens.defaultToken);
+                  }
+                }}
               >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {Object.entries(AVAILABLE_CHAINS).map(([id, chain]) => (
-                    <SelectItem key={id} value={id}>
+                  {chainOptions.map((chain) => (
+                    <SelectItem key={chain.id} value={chain.id.toString()}>
                       {chain.name}
                     </SelectItem>
                   ))}
@@ -323,32 +380,109 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {TOKEN_OPTIONS.map((token) => (
-                    <SelectItem key={token} value={token}>
-                      {token}
+                  {transferChainTokens.availableTokens.map((token) => (
+                    <SelectItem key={token.symbol} value={token.symbol}>
+                      {token.symbol}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              {transferChainTokens.availableTokens.length === 0 && (
+                <p className="text-sm text-muted-foreground mt-1">
+                  No tokens available for selected chain
+                </p>
+              )}
             </div>
 
             <div>
               <Label>Amount</Label>
-              <Input
-                value={node.data.config.amount}
-                onChange={(e) => handleConfigUpdate('amount', e.target.value)}
-                placeholder="Amount to transfer"
-              />
+              {localConfig.amount === 'fromPrevious' ? (
+                <div className="flex items-center gap-2">
+                  <Input value={"From previous step"} disabled />
+                  <Button size="sm" variant="outline" onClick={() => handleSelectChange('amount', '')}>
+                    Use custom
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={localConfig.amount}
+                    onChange={(e) => handleSelectChange('amount', e.target.value)}
+                    placeholder="Amount to transfer"
+                  />
+                  <Button size="sm" variant="outline" onClick={() => handleSelectChange('amount', 'fromPrevious')}>
+                    From previous
+                  </Button>
+                </div>
+              )}
             </div>
 
             <div>
               <Label>Recipient Address</Label>
               <Input
-                value={node.data.config.recipient}
-                onChange={(e) => handleConfigUpdate('recipient', e.target.value)}
-                placeholder="0x..."
+                value={localConfig.toAddress || ''}
+                onChange={(e) => handleSelectChange('toAddress', e.target.value)}
+                placeholder="0x742d35Cc6634C0532925a3b8D4C9db96c4b4Db45"
+                className={localConfig.toAddress && !isValidEthereumAddress(localConfig.toAddress) ? 'border-red-500' : ''}
               />
+              {localConfig.toAddress && !isValidEthereumAddress(localConfig.toAddress) && (
+                <p className="text-sm text-red-500 mt-1">
+                  Invalid Ethereum address format
+                </p>
+              )}
+              {localConfig.toAddress && isValidEthereumAddress(localConfig.toAddress) && (
+                <p className="text-sm text-green-600 mt-1">
+                  ✓ Valid Ethereum address
+                </p>
+              )}
             </div>
+
+            <div>
+              <Label>Source Chains (Optional)</Label>
+              <p className="text-sm text-muted-foreground mb-2">
+                Leave empty for automatic source chain selection, or select specific chains to restrict funding sources
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {chainOptions.map((chain) => {
+                  const isSelected = localConfig.sourceChains?.includes(chain.id) || false;
+                  return (
+                    <Button
+                      key={chain.id}
+                      variant={isSelected ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => {
+                        const currentSources = localConfig.sourceChains || [];
+                        const newSources = isSelected
+                          ? currentSources.filter(id => id !== chain.id)
+                          : [...currentSources, chain.id];
+                        handleSelectChange('sourceChains', newSources.length > 0 ? newSources : undefined);
+                      }}
+                    >
+                      {chain.name}
+                    </Button>
+                  );
+                })}
+              </div>
+              {localConfig.sourceChains && localConfig.sourceChains.length > 0 && (
+                <p className="text-sm text-blue-600 mt-2">
+                  Transfer will only use funds from: {localConfig.sourceChains.map(id =>
+                    chainOptions.find(c => c.id === id)?.name || id
+                  ).join(', ')}
+                </p>
+              )}
+            </div>
+
+            {/* Transfer Preview/Simulation */}
+            <TransferPreview
+              token={localConfig.token}
+              amount={localConfig.amount === 'fromPrevious' ? 0 : localConfig.amount}
+              chainId={localConfig.chain}
+              recipient={localConfig.toAddress || ''}
+              sourceChains={localConfig.sourceChains}
+              onSimulate={(result) => {
+                console.log('Transfer simulation result:', result);
+              }}
+            />
           </div>
         );
 
@@ -359,14 +493,30 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
               <Label>Chain</Label>
               <Select
                 value={localConfig.chain?.toString()}
-                onValueChange={(value) => handleSelectChange('chain', parseInt(value))}
+                onValueChange={(value) => {
+                  const chainId = parseInt(value);
+                  handleSelectChange('chain', chainId);
+
+                  // Auto-select first available tokens for the new chain if current tokens are not supported
+                  if (swapChainTokens.defaultToken) {
+                    if (!swapChainTokens.isTokenValid(localConfig.fromToken)) {
+                      handleSelectChange('fromToken', swapChainTokens.defaultToken);
+                    }
+                    if (!swapChainTokens.isTokenValid(localConfig.toToken)) {
+                      // Select second available token for "to" if possible, otherwise same as from
+                      const availableTokens = swapChainTokens.availableTokens;
+                      const toToken = availableTokens.length > 1 ? availableTokens[1].symbol : swapChainTokens.defaultToken;
+                      handleSelectChange('toToken', toToken);
+                    }
+                  }
+                }}
               >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {Object.entries(AVAILABLE_CHAINS).map(([id, chain]) => (
-                    <SelectItem key={id} value={id}>
+                  {chainOptions.map((chain) => (
+                    <SelectItem key={chain.id} value={chain.id.toString()}>
                       {chain.name}
                     </SelectItem>
                   ))}
@@ -384,13 +534,18 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {TOKEN_OPTIONS.map((token) => (
-                    <SelectItem key={token} value={token}>
-                      {token}
+                  {swapChainTokens.availableTokens.map((token) => (
+                    <SelectItem key={token.symbol} value={token.symbol}>
+                      {token.symbol}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              {swapChainTokens.availableTokens.length === 0 && (
+                <p className="text-sm text-muted-foreground mt-1">
+                  No tokens available for selected chain
+                </p>
+              )}
             </div>
 
             <div>
@@ -403,22 +558,41 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {TOKEN_OPTIONS.map((token) => (
-                    <SelectItem key={token} value={token}>
-                      {token}
+                  {swapChainTokens.availableTokens.map((token) => (
+                    <SelectItem key={token.symbol} value={token.symbol}>
+                      {token.symbol}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              {swapChainTokens.availableTokens.length === 0 && (
+                <p className="text-sm text-muted-foreground mt-1">
+                  No tokens available for selected chain
+                </p>
+              )}
             </div>
 
             <div>
               <Label>Amount</Label>
-              <Input
-                value={node.data.config.amount}
-                onChange={(e) => handleConfigUpdate('amount', e.target.value)}
-                placeholder="Amount to swap"
-              />
+              {localConfig.amount === 'fromPrevious' ? (
+                <div className="flex items-center gap-2">
+                  <Input value={"From previous step"} disabled />
+                  <Button size="sm" variant="outline" onClick={() => handleSelectChange('amount', '')}>
+                    Use custom
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={localConfig.amount}
+                    onChange={(e) => handleSelectChange('amount', e.target.value)}
+                    placeholder="Amount to swap"
+                  />
+                  <Button size="sm" variant="outline" onClick={() => handleSelectChange('amount', 'fromPrevious')}>
+                    From previous
+                  </Button>
+                </div>
+              )}
             </div>
 
             <div>
@@ -449,8 +623,8 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {Object.entries(AVAILABLE_CHAINS).map(([id, chain]) => (
-                    <SelectItem key={id} value={id}>
+                  {chainOptions.map((chain) => (
+                    <SelectItem key={chain.id} value={chain.id.toString()}>
                       {chain.name}
                     </SelectItem>
                   ))}
@@ -468,9 +642,9 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {TOKEN_OPTIONS.map((token) => (
-                    <SelectItem key={token} value={token}>
-                      {token}
+                  {tokenOptions.map((token) => (
+                    <SelectItem key={token.symbol} value={token.symbol}>
+                      {token.symbol}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -479,11 +653,25 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
 
             <div>
               <Label>Amount</Label>
-              <Input
-                value={node.data.config.amount}
-                onChange={(e) => handleConfigUpdate('amount', e.target.value)}
-                placeholder="Amount to stake"
-              />
+              {localConfig.amount === 'fromPrevious' ? (
+                <div className="flex items-center gap-2">
+                  <Input value={"From previous step"} disabled />
+                  <Button size="sm" variant="outline" onClick={() => handleSelectChange('amount', '')}>
+                    Use custom
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={localConfig.amount}
+                    onChange={(e) => handleSelectChange('amount', e.target.value)}
+                    placeholder="Amount to stake"
+                  />
+                  <Button size="sm" variant="outline" onClick={() => handleSelectChange('amount', 'fromPrevious')}>
+                    From previous
+                  </Button>
+                </div>
+              )}
             </div>
 
             <div>
@@ -518,8 +706,8 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {Object.entries(AVAILABLE_CHAINS).map(([id, chain]) => (
-                    <SelectItem key={id} value={id}>
+                  {chainOptions.map((chain) => (
+                    <SelectItem key={chain.id} value={chain.id.toString()}>
                       {chain.name}
                     </SelectItem>
                   ))}
@@ -608,9 +796,17 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <Badge variant="outline" className="w-fit">
-          {node.data.type}
-        </Badge>
+        <div className="flex items-center gap-2">
+          <Badge variant="outline" className="w-fit">
+            {node.data.type}
+          </Badge>
+          <Badge
+            variant={isTestnet ? "secondary" : "default"}
+            className={isTestnet ? "bg-orange-100 text-orange-800" : "bg-green-100 text-green-800"}
+          >
+            {networkType.toUpperCase()}
+          </Badge>
+        </div>
         <Button
           variant="destructive"
           size="sm"
