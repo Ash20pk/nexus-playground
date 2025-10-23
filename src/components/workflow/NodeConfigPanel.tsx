@@ -13,6 +13,7 @@ import { SUPPORTED_CHAINS_IDS, SUPPORTED_TOKENS } from '@/types/workflow';
 import { useNetworkOptions } from '@/hooks/useNetworkOptions';
 import { useChainTokens } from '@/hooks/useChainTokens';
 import { TransferPreview } from './TransferPreview';
+import { SwapPreview } from './SwapPreview';
 
 // Ethereum address validation utility
 const isValidEthereumAddress = (address: string): boolean => {
@@ -59,14 +60,21 @@ const BalanceCheckConfig: React.FC<BalanceCheckConfigProps> = ({ node, onConfigU
     handleSelectChange('condition', value);
   };
 
-  // Cleanup timeout on unmount
+  // Flush pending changes and cleanup timeout on unmount
   React.useEffect(() => {
     return () => {
       if (updateTimeoutRef.current) {
         clearTimeout(updateTimeoutRef.current);
+        // Flush any pending changes before unmount
+        Object.keys(localConfig).forEach(key => {
+          if (localConfig[key] !== node.data.config[key]) {
+            console.log('🔄 Flushing pending balance check change on unmount:', { key, value: localConfig[key] });
+            onConfigUpdate(key, localConfig[key]);
+          }
+        });
       }
     };
-  }, []);
+  }, [localConfig, node.data.config]);
 
   return (
     <div className="space-y-4">
@@ -177,7 +185,8 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
   const bridgeFromChainTokens = useChainTokens(node?.data.config.fromChain);
   const bridgeToChainTokens = useChainTokens(node?.data.config.toChain);
   const transferChainTokens = useChainTokens(node?.data.config.chain);
-  const swapChainTokens = useChainTokens(node?.data.config.chain);
+  const swapFromChainTokens = useChainTokens(node?.data.config.fromChain);
+  const swapToChainTokens = useChainTokens(node?.data.config.toChain);
 
   if (!node) {
     return (
@@ -227,14 +236,21 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
     }, 300);
   };
 
-  // Cleanup timeout on unmount
+  // Flush pending changes and cleanup timeout on unmount
   React.useEffect(() => {
     return () => {
       if (updateTimeoutRef.current) {
         clearTimeout(updateTimeoutRef.current);
+        // Flush any pending changes before unmount
+        Object.keys(localConfig).forEach(key => {
+          if (localConfig[key] !== node.data.config[key]) {
+            console.log('🔄 Flushing pending change on unmount:', { key, value: localConfig[key] });
+            handleConfigUpdate(key, localConfig[key]);
+          }
+        });
       }
     };
-  }, []);
+  }, [localConfig, node.data.config]);
 
   const handleLabelUpdate = (label: string) => {
     updateNode(node.id, { label });
@@ -489,87 +505,110 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
       case 'swap':
         return (
           <div className="space-y-4">
-            <div>
-              <Label>Chain</Label>
-              <Select
-                value={localConfig.chain?.toString()}
-                onValueChange={(value) => {
-                  const chainId = parseInt(value);
-                  handleSelectChange('chain', chainId);
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>From Chain</Label>
+                <Select
+                  value={localConfig.fromChain?.toString()}
+                  onValueChange={(value) => {
+                    const chainId = parseInt(value);
+                    handleSelectChange('fromChain', chainId);
 
-                  // Auto-select first available tokens for the new chain if current tokens are not supported
-                  if (swapChainTokens.defaultToken) {
-                    if (!swapChainTokens.isTokenValid(localConfig.fromToken)) {
-                      handleSelectChange('fromToken', swapChainTokens.defaultToken);
+                    // Auto-select first available token for the new from chain
+                    if (swapFromChainTokens.defaultToken) {
+                      handleSelectChange('fromToken', swapFromChainTokens.defaultToken);
                     }
-                    if (!swapChainTokens.isTokenValid(localConfig.toToken)) {
-                      // Select second available token for "to" if possible, otherwise same as from
-                      const availableTokens = swapChainTokens.availableTokens;
-                      const toToken = availableTokens.length > 1 ? availableTokens[1].symbol : swapChainTokens.defaultToken;
-                      handleSelectChange('toToken', toToken);
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {chainOptions.map((chain) => (
+                      <SelectItem key={chain.id} value={chain.id.toString()}>
+                        {chain.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div>
+                <Label>To Chain</Label>
+                <Select
+                  value={localConfig.toChain?.toString()}
+                  onValueChange={(value) => {
+                    const chainId = parseInt(value);
+                    handleSelectChange('toChain', chainId);
+
+                    // Auto-select first available token for the new to chain
+                    if (swapToChainTokens.defaultToken) {
+                      handleSelectChange('toToken', swapToChainTokens.defaultToken);
                     }
-                  }
-                }}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {chainOptions.map((chain) => (
-                    <SelectItem key={chain.id} value={chain.id.toString()}>
-                      {chain.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {chainOptions.map((chain) => (
+                      <SelectItem key={chain.id} value={chain.id.toString()}>
+                        {chain.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
 
-            <div>
-              <Label>From Token</Label>
-              <Select
-                value={localConfig.fromToken}
-                onValueChange={(value) => handleSelectChange('fromToken', value)}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {swapChainTokens.availableTokens.map((token) => (
-                    <SelectItem key={token.symbol} value={token.symbol}>
-                      {token.symbol}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {swapChainTokens.availableTokens.length === 0 && (
-                <p className="text-sm text-muted-foreground mt-1">
-                  No tokens available for selected chain
-                </p>
-              )}
-            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>From Token</Label>
+                <Select
+                  value={localConfig.fromToken}
+                  onValueChange={(value) => handleSelectChange('fromToken', value)}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {swapFromChainTokens.availableTokens.map((token) => (
+                      <SelectItem key={token.symbol} value={token.symbol}>
+                        {token.symbol}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {swapFromChainTokens.availableTokens.length === 0 && (
+                  <p className="text-sm text-muted-foreground mt-1">
+                    No tokens available for selected chain
+                  </p>
+                )}
+              </div>
 
-            <div>
-              <Label>To Token</Label>
-              <Select
-                value={localConfig.toToken}
-                onValueChange={(value) => handleSelectChange('toToken', value)}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {swapChainTokens.availableTokens.map((token) => (
-                    <SelectItem key={token.symbol} value={token.symbol}>
-                      {token.symbol}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {swapChainTokens.availableTokens.length === 0 && (
-                <p className="text-sm text-muted-foreground mt-1">
-                  No tokens available for selected chain
-                </p>
-              )}
+              <div>
+                <Label>To Token</Label>
+                <Select
+                  value={localConfig.toToken}
+                  onValueChange={(value) => handleSelectChange('toToken', value)}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {swapToChainTokens.availableTokens.map((token) => (
+                      <SelectItem key={token.symbol} value={token.symbol}>
+                        {token.symbol}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {swapToChainTokens.availableTokens.length === 0 && (
+                  <p className="text-sm text-muted-foreground mt-1">
+                    No tokens available for selected chain
+                  </p>
+                )}
+              </div>
             </div>
 
             <div>
@@ -607,6 +646,19 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
                 max="10"
               />
             </div>
+
+            {/* Swap Preview */}
+            <SwapPreview
+              fromToken={localConfig.fromToken || ''}
+              toToken={localConfig.toToken || ''}
+              amount={localConfig.amount === 'fromPrevious' ? '1' : localConfig.amount || ''}
+              fromChainId={localConfig.fromChain || 137}
+              toChainId={localConfig.toChain || 42161}
+              slippage={localConfig.slippage || 0.5}
+              onSimulate={(result) => {
+                console.log('Swap simulation result:', result);
+              }}
+            />
           </div>
         );
 

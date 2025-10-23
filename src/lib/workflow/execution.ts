@@ -400,11 +400,19 @@ export class WorkflowExecutionEngine {
     const config = node.data.config as SwapNodeConfig;
     const amount = this.resolveValue(config.amount);
 
-    console.log('🔄 NEXUS SWAP - Starting native swap:', {
+    // Validate amount
+    if (!amount || amount === '' || isNaN(Number(amount))) {
+      throw new Error(`Invalid swap amount: ${amount}. Please provide a valid numeric amount.`);
+    }
+
+    const isSameChainSwap = config.fromChain === config.toChain;
+    console.log(`🔄 NEXUS SWAP - Starting ${isSameChainSwap ? 'same-chain' : 'cross-chain'} swap:`, {
       fromToken: config.fromToken,
       toToken: config.toToken,
       amount,
-      chain: config.chain,
+      resolvedAmount: Number(amount),
+      fromChain: config.fromChain,
+      toChain: config.toChain,
       slippage: config.slippage
     });
 
@@ -413,8 +421,8 @@ export class WorkflowExecutionEngine {
         fromToken: config.fromToken,
         toToken: config.toToken,
         amount: amount.toString(),
-        fromChain: config.chain,
-        toChain: config.chain, // Same chain swap
+        fromChain: config.fromChain,
+        toChain: config.toChain,
         slippage: config.slippage || 0.5
       });
 
@@ -468,7 +476,54 @@ export class WorkflowExecutionEngine {
     });
 
     try {
-      // Validate inputs before calling swap
+      // Validate swap support following SDK documentation
+      console.log('🔍 NEXUS SWAP - Validating swap support...');
+
+      // Check if source token/chain is supported
+      const supportedOptions = this.context.nexusSdk.utils.getSwapSupportedChainsAndTokens();
+
+      console.log('🔍 NEXUS SWAP - SDK supported chains and tokens:', {
+        totalChains: supportedOptions.length,
+        chains: supportedOptions.map(c => ({
+          id: c.id,
+          name: c.name,
+          tokenCount: c.tokens.length,
+          tokens: c.tokens.map(t => ({ symbol: t.symbol, address: t.tokenAddress }))
+        }))
+      });
+
+      const sourceChainSupported = supportedOptions.find(chain => chain.id === config.fromChain);
+
+      if (!sourceChainSupported) {
+        throw new Error(`Source chain ${config.fromChain} is not supported for swaps. Supported chains: ${supportedOptions.map(c => `${c.name} (${c.id})`).join(', ')}`);
+      }
+
+      console.log('🔍 NEXUS SWAP - Looking for token:', {
+        targetSymbol: config.fromToken,
+        targetAddress: fromTokenAddress,
+        availableTokens: sourceChainSupported.tokens
+      });
+
+      const sourceTokenSupported = sourceChainSupported.tokens.find(token =>
+        token.symbol === config.fromToken || token.tokenAddress === fromTokenAddress
+      );
+
+      if (!sourceTokenSupported) {
+        const supportedTokens = sourceChainSupported.tokens.map(t => t.symbol).join(', ');
+        throw new Error(`Token ${config.fromToken} is not supported on chain ${config.fromChain}. Supported tokens: ${supportedTokens}`);
+      }
+
+      // Detect swap type
+      const isSameChainSwap = config.fromChain === config.toChain;
+
+      console.log('✅ NEXUS SWAP - Source validation passed:', {
+        fromChain: sourceChainSupported.name,
+        fromToken: sourceTokenSupported.symbol,
+        supportedTokenAddress: sourceTokenSupported.tokenAddress,
+        swapType: isSameChainSwap ? 'Same-chain swap (no bridging)' : 'Cross-chain swap (bridging required)'
+      });
+
+      // Validate inputs
       if (amountBigInt <= 0n) {
         throw new Error(`Invalid amount: ${amountBigInt.toString()}. Amount must be greater than 0.`);
       }
@@ -481,12 +536,23 @@ export class WorkflowExecutionEngine {
         throw new Error('Cannot swap the same token to itself on the same chain');
       }
 
-      // Follow the exact SDK pattern from documentation
+      // Use the SDK's supported token address if available, otherwise fall back to our mapping
+      const actualFromTokenAddress = sourceTokenSupported.tokenAddress || fromTokenAddress;
+
+      console.log('🚀 NEXUS SWAP - Using token addresses:', {
+        from: {
+          original: fromTokenAddress,
+          sdkSupported: sourceTokenSupported.tokenAddress,
+          actualUsed: actualFromTokenAddress
+        },
+        to: toTokenAddress
+      });
+
       const swapWithExactInInput = {
         from: [{
           chainId: config.fromChain,
           amount: amountBigInt,
-          tokenAddress: fromTokenAddress as `0x${string}`
+          tokenAddress: actualFromTokenAddress as `0x${string}`
         }],
         toChainId: config.toChain,
         toTokenAddress: toTokenAddress as `0x${string}`
@@ -514,34 +580,100 @@ export class WorkflowExecutionEngine {
         chainInfo: `Chain ${config.fromChain} (${config.fromChain === 11155111 ? 'Sepolia' : 'Unknown'})`
       });
 
-      const swapResult = await this.context.nexusSdk.swapWithExactIn(swapWithExactInInput, {
-        swapIntentHook: async (data) => {
-          console.log('🔄 NEXUS SWAP - Intent hook called with data keys:', Object.keys(data));
-          console.log('🔍 NEXUS SWAP - Intent hook full data:', JSON.stringify(data, (key, value) => {
-            // Handle BigInt serialization
-            return typeof value === 'bigint' ? value.toString() : value;
-          }, 2));
-          return true;
+      // Set up progress tracking for the swap
+      const swapSteps: string[] = [];
+
+      // Listen for swap progress events
+      const swapStepListener = (step: any) => {
+        swapSteps.push(step.type);
+        console.log(`🔄 NEXUS SWAP - Step: ${step.type}`, {
+          stepType: step.type,
+          explorerURL: step.explorerURL || 'N/A',
+          totalSteps: swapSteps.length
+        });
+
+        switch (step.type) {
+          case 'SWAP_START':
+            console.log('🔄 NEXUS SWAP - Swap initiated');
+            break;
+          case 'DETERMINING_SWAP':
+            console.log('🔍 NEXUS SWAP - Finding best route...');
+            break;
+          case 'SOURCE_SWAP_HASH':
+            console.log('📤 NEXUS SWAP - Source swap tx:', step.explorerURL);
+            break;
+          case 'DESTINATION_SWAP_HASH':
+            console.log('📥 NEXUS SWAP - Destination swap tx:', step.explorerURL);
+            break;
+          case 'SWAP_COMPLETE':
+            console.log('✅ NEXUS SWAP - Swap completed!');
+            break;
         }
-      });
-
-      console.log('✅ NEXUS SWAP - Result:', swapResult);
-
-      if (!swapResult.success) {
-        throw new Error(`Nexus swap failed: ${swapResult.error || 'Unknown error'}`);
-      }
-
-      return {
-        type: 'nexus-swap',
-        inputAmount: config.amount,
-        outputAmount: swapResult.outputAmount || 'unknown',
-        fromToken: config.fromToken,
-        toToken: config.toToken,
-        fromChain: config.fromChain,
-        toChain: config.toChain,
-        transactionHash: swapResult.transactionHash || swapResult.txHash,
-        success: true
       };
+
+      // Attach event listener
+      this.context.nexusSdk.nexusEvents.on('swap_step', swapStepListener);
+
+      try {
+        const swapResult = await this.context.nexusSdk.swapWithExactIn(swapWithExactInInput, {
+          swapIntentHook: async ({ intent, allow, deny, refresh }) => {
+            // Detect if it's a same-chain swap based on sources and destination chain
+            const isSameChainDetected = intent.sources.every(s => s.chainID === intent.destination.chainID);
+
+            console.log('🔄 NEXUS SWAP - Intent hook called:', {
+              sources: intent.sources,
+              destination: intent.destination,
+              expectedOutput: intent.destination.amount,
+              swapType: isSameChainDetected ? 'Same-chain swap (no bridging)' : 'Cross-chain swap (bridging required)'
+            });
+
+            // Log swap details for user visibility
+            console.log('🔍 NEXUS SWAP - Swap preview:', {
+              willReceive: `${intent.destination.amount} ${intent.destination.symbol}`,
+              fromSources: intent.sources.map(s => `${s.amount} ${s.symbol} on chain ${s.chainID}`),
+              destinationChain: intent.destination.chainID,
+              detectedSwapType: isSameChainDetected ? 'Same-chain (DEX only)' : 'Cross-chain (DEX + Bridge)'
+            });
+
+            // Auto-approve for workflow execution
+            // In a real app, you'd show this to the user for approval
+            console.log('✅ NEXUS SWAP - Auto-approving swap intent');
+            allow();
+          }
+        });
+
+        console.log('✅ NEXUS SWAP - Raw result:', swapResult);
+
+        if (!swapResult.success) {
+          throw new Error(`Nexus swap failed: ${swapResult.error || 'Unknown error'}`);
+        }
+
+        // Extract result data following SDK documentation pattern
+        const resultData = swapResult.result;
+        console.log('✅ NEXUS SWAP - Swap completed successfully:', {
+          sourceSwaps: resultData.sourceSwaps?.length || 0,
+          destinationSwap: !!resultData.destinationSwap,
+          explorerURL: resultData.explorerURL
+        });
+
+        return {
+          type: 'nexus-swap',
+          inputAmount: config.amount,
+          fromToken: config.fromToken,
+          toToken: config.toToken,
+          fromChain: config.fromChain,
+          toChain: config.toChain,
+          sourceSwaps: resultData.sourceSwaps || [],
+          destinationSwap: resultData.destinationSwap,
+          explorerURL: resultData.explorerURL,
+          success: true,
+          timestamp: new Date().toISOString(),
+          steps: swapSteps
+        };
+      } finally {
+        // Clean up event listener
+        this.context.nexusSdk.nexusEvents.off('swap_step', swapStepListener);
+      }
 
     } catch (error) {
       console.error('❌ NEXUS SWAP - Error:', error);
@@ -766,6 +898,15 @@ export class WorkflowExecutionEngine {
       const variableName = value.slice(2, -2);
       return this.context.variables[variableName] || this.context.results[variableName] || value;
     }
+
+    // Handle 'fromPrevious' special case
+    if (value === 'fromPrevious') {
+      // For now, return a default amount since we don't have previous step results
+      // In a real implementation, this would get the amount from the previous workflow step
+      console.log('⚠️ WORKFLOW - fromPrevious not implemented yet, using default amount: 1');
+      return '1';
+    }
+
     return value;
   }
 
@@ -789,10 +930,24 @@ export class WorkflowExecutionEngine {
   }
 
   private parseToWei(amount: string, decimals: number): bigint {
+    // Validate input amount
+    if (!amount || amount === '' || isNaN(Number(amount))) {
+      throw new Error(`Invalid amount for parseToWei: "${amount}". Must be a valid numeric string.`);
+    }
+
+    if (Number(amount) <= 0) {
+      throw new Error(`Invalid amount for parseToWei: "${amount}". Must be greater than 0.`);
+    }
+
     // More standard parseUnits implementation matching ethers/viem pattern
     const [whole, decimal = ''] = amount.split('.');
     const paddedDecimal = decimal.padEnd(decimals, '0').slice(0, decimals);
     const fullAmount = whole + paddedDecimal;
+
+    if (fullAmount === '' || fullAmount === '0') {
+      throw new Error(`parseToWei resulted in zero amount. Original: "${amount}", decimals: ${decimals}`);
+    }
+
     return BigInt(fullAmount);
   }
 
@@ -812,9 +967,24 @@ export class WorkflowExecutionEngine {
       },
       137: { // Polygon
         'MATIC': '0x0000000000000000000000000000000000000000',
-        'USDC': '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
-        'USDT': '0xc2132D05D31c914a87C6611C10748AEb04B58e8F',
+        'USDC': '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359', // Updated to match SDK
+        'USDT': '0xc2132d05d31c914a87c6611c10748aeb04b58e8f', // Updated to match SDK case
         'ETH': '0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619',
+      },
+      10: { // Optimism
+        'ETH': '0x0000000000000000000000000000000000000000',
+        'USDC': '0x7F5c764cBc14f9669B88837ca1490cCa17c31607',
+        'USDT': '0x94b008aA00579c1307B0EF2c499aD98a8ce58e58',
+      },
+      42161: { // Arbitrum
+        'ETH': '0x0000000000000000000000000000000000000000',
+        'USDC': '0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8',
+        'USDT': '0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9',
+      },
+      8453: { // Base
+        'ETH': '0x0000000000000000000000000000000000000000',
+        'USDC': '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+        'USDT': '0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2',
       },
 
       // Testnet addresses
@@ -834,8 +1004,14 @@ export class WorkflowExecutionEngine {
 
     const address = tokenAddresses[effectiveChainId]?.[symbol];
     if (!address) {
-      console.warn(`⚠️ Token address not found for ${symbol} on chain ${effectiveChainId} (${isMainnet ? 'mainnet' : 'testnet'} mode), using zero address`);
-      return '0x0000000000000000000000000000000000000000';
+      const supportedChains = Object.keys(tokenAddresses).join(', ');
+      const supportedTokensOnChain = tokenAddresses[effectiveChainId] ? Object.keys(tokenAddresses[effectiveChainId]).join(', ') : 'none';
+
+      throw new Error(
+        `❌ Token address not found for ${symbol} on chain ${effectiveChainId} (${isMainnet ? 'mainnet' : 'testnet'} mode).\n` +
+        `Supported chains: ${supportedChains}\n` +
+        `Supported tokens on chain ${effectiveChainId}: ${supportedTokensOnChain}`
+      );
     }
 
     console.log(`🌐 Network mode: ${isMainnet ? 'MAINNET' : 'TESTNET'} - Using chain ${effectiveChainId} for ${symbol}`);

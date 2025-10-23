@@ -60,13 +60,13 @@ export interface TransferNodeConfig extends WorkflowNodeConfig {
 }
 
 export interface SwapNodeConfig extends WorkflowNodeConfig {
-  chain: SUPPORTED_CHAINS_IDS;
+  fromChain: SUPPORTED_CHAINS_IDS;
+  toChain: SUPPORTED_CHAINS_IDS;
   fromToken: SUPPORTED_TOKENS;
   toToken: SUPPORTED_TOKENS;
   amount: string | 'fromPrevious';
   slippage: number;
-  // Note: Internally uses sdk.execute() with DEX contract ABIs (Uniswap, SushiSwap, etc.)
-  dexProtocol?: 'uniswap-v3' | 'sushiswap' | 'curve'; // DEX to use for swap
+  // Note: Uses Nexus SDK same-chain and cross-chain swap with DEX aggregators (LiFi, Bebop)
 }
 
 export interface StakeNodeConfig extends WorkflowNodeConfig {

@@ -133,7 +133,12 @@ export const WorkflowNode = memo(({ data, selected }: WorkflowNodeProps) => {
       case 'transfer':
         return `${resolve('amount', data.config.amount)} ${data.config.token} on Chain ${data.config.chain}`;
       case 'swap':
-        return `${data.config.fromToken} → ${data.config.toToken} on Chain ${data.config.chain}`;
+        const isSameChainSwap = data.config.fromChain === data.config.toChain;
+        if (isSameChainSwap) {
+          return `${data.config.fromToken || '?'} → ${data.config.toToken || '?'} on Chain ${data.config.fromChain || '?'}`;
+        } else {
+          return `${data.config.fromToken || '?'} → ${data.config.toToken || '?'} (${data.config.fromChain || '?'} → ${data.config.toChain || '?'})`;
+        }
       case 'stake':
         return `${resolve('amount', data.config.amount)} ${data.config.token} via ${data.config.protocol}`;
       case 'custom-contract':
