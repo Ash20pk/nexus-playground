@@ -15,6 +15,7 @@ import { useChainTokens } from '@/hooks/useChainTokens';
 import { TransferPreview } from './TransferPreview';
 import { SwapPreview } from './SwapPreview';
 import { BridgePreview } from './BridgePreview';
+import { BridgeExecutePreview } from './BridgeExecutePreview';
 
 // Ethereum address validation utility
 const isValidEthereumAddress = (address: string): boolean => {
@@ -815,6 +816,347 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
                 placeholder='["param1", "param2"]'
               />
             </div>
+          </div>
+        );
+
+      case 'bridge-execute':
+        return (
+          <div className="space-y-6">
+            {/* Bridge Configuration Section */}
+            <div className="space-y-4">
+              <h4 className="font-semibold text-gray-900 flex items-center gap-2">
+                <span className="w-6 h-6 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-xs font-bold">1</span>
+                Bridge Configuration
+              </h4>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label>Token</Label>
+                  <Select
+                    value={localConfig.token}
+                    onValueChange={(value) => handleSelectChange('token', value)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {tokenOptions.map((token) => (
+                        <SelectItem key={token.symbol} value={token.symbol}>
+                          {token.symbol}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div>
+                  <Label>Destination Chain</Label>
+                  <Select
+                    value={localConfig.toChainId?.toString()}
+                    onValueChange={(value) => handleSelectChange('toChainId', parseInt(value))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {chainOptions.map((chain) => (
+                        <SelectItem key={chain.id} value={chain.id.toString()}>
+                          {chain.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div>
+                <Label>Amount</Label>
+                {localConfig.amount === 'fromPrevious' ? (
+                  <div className="flex items-center gap-2">
+                    <Input value={"From previous step"} disabled />
+                    <Button size="sm" variant="outline" onClick={() => handleSelectChange('amount', '')}>
+                      Use custom
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={localConfig.amount}
+                      onChange={(e) => handleSelectChange('amount', e.target.value)}
+                      placeholder="Amount to bridge"
+                    />
+                    <Button size="sm" variant="outline" onClick={() => handleSelectChange('amount', 'fromPrevious')}>
+                      From previous
+                    </Button>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <Label>Source Chains (Optional)</Label>
+                <p className="text-sm text-muted-foreground mb-2">
+                  Leave empty for automatic source chain selection
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {chainOptions.map((chain) => {
+                    const isSelected = localConfig.sourceChains?.includes(chain.id) || false;
+                    return (
+                      <Button
+                        key={chain.id}
+                        variant={isSelected ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => {
+                          const currentSources = localConfig.sourceChains || [];
+                          const newSources = isSelected
+                            ? currentSources.filter(id => id !== chain.id)
+                            : [...currentSources, chain.id];
+                          handleSelectChange('sourceChains', newSources.length > 0 ? newSources : undefined);
+                        }}
+                      >
+                        {chain.name}
+                      </Button>
+                    );
+                  })}
+                </div>
+                {localConfig.sourceChains && localConfig.sourceChains.length > 0 && (
+                  <p className="text-sm text-blue-600 mt-2">
+                    Will use funds from: {localConfig.sourceChains.map(id =>
+                      chainOptions.find(c => c.id === id)?.name || id
+                    ).join(', ')}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <Separator />
+
+            {/* Contract Execution Section */}
+            <div className="space-y-4">
+              <h4 className="font-semibold text-gray-900 flex items-center gap-2">
+                <span className="w-6 h-6 bg-purple-100 text-purple-600 rounded-full flex items-center justify-center text-xs font-bold">2</span>
+                Contract Execution
+              </h4>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label>Contract Address</Label>
+                  <Input
+                    value={localConfig.execute?.contractAddress || ''}
+                    onChange={(e) => handleSelectChange('execute', {
+                      ...localConfig.execute,
+                      contractAddress: e.target.value
+                    })}
+                    placeholder="0x..."
+                    className={localConfig.execute?.contractAddress && !isValidEthereumAddress(localConfig.execute.contractAddress) ? 'border-red-500' : ''}
+                  />
+                  {localConfig.execute?.contractAddress && !isValidEthereumAddress(localConfig.execute.contractAddress) && (
+                    <p className="text-sm text-red-500 mt-1">
+                      Invalid contract address format
+                    </p>
+                  )}
+                  {localConfig.execute?.contractAddress && isValidEthereumAddress(localConfig.execute.contractAddress) && (
+                    <p className="text-sm text-green-600 mt-1">
+                      ✓ Valid contract address
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <Label>Function Name</Label>
+                  <Input
+                    value={localConfig.execute?.functionName || ''}
+                    onChange={(e) => handleSelectChange('execute', {
+                      ...localConfig.execute,
+                      functionName: e.target.value
+                    })}
+                    placeholder="stake"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <Label>Function Parameters (JSON)</Label>
+                <textarea
+                  className="w-full p-2 border rounded-md resize-none font-mono text-sm"
+                  rows={3}
+                  value={JSON.stringify(localConfig.execute?.parameters || [], null, 2)}
+                  onChange={(e) => {
+                    try {
+                      const params = JSON.parse(e.target.value);
+                      handleSelectChange('execute', {
+                        ...localConfig.execute,
+                        parameters: params
+                      });
+                    } catch (error) {
+                      // Invalid JSON, ignore
+                    }
+                  }}
+                  placeholder='["param1", "param2"]'
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Provide function parameters as a JSON array
+                </p>
+              </div>
+
+              <div>
+                <Label>Contract ABI (JSON)</Label>
+                <textarea
+                  className="w-full p-2 border rounded-md resize-none font-mono text-sm"
+                  rows={4}
+                  value={JSON.stringify(localConfig.execute?.contractAbi || [], null, 2)}
+                  onChange={(e) => {
+                    try {
+                      const abi = JSON.parse(e.target.value);
+                      handleSelectChange('execute', {
+                        ...localConfig.execute,
+                        contractAbi: abi
+                      });
+                    } catch (error) {
+                      // Invalid JSON, ignore
+                    }
+                  }}
+                  placeholder='[{"name": "stake", "type": "function", "inputs": [...], "outputs": [...]}]'
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Contract ABI definition for the function to call
+                </p>
+              </div>
+            </div>
+
+            <Separator />
+
+            {/* Advanced Options Section */}
+            <div className="space-y-4">
+              <h4 className="font-semibold text-gray-900 flex items-center gap-2">
+                <span className="w-6 h-6 bg-gray-100 text-gray-600 rounded-full flex items-center justify-center text-xs font-bold">3</span>
+                Advanced Options
+              </h4>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-3">
+                  <Label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={localConfig.waitForReceipt || false}
+                      onChange={(e) => handleSelectChange('waitForReceipt', e.target.checked)}
+                    />
+                    Wait for Transaction Receipt
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    Wait for transaction confirmation before proceeding
+                  </p>
+                </div>
+
+                <div>
+                  <Label>Required Confirmations</Label>
+                  <Input
+                    type="number"
+                    value={localConfig.requiredConfirmations || 1}
+                    onChange={(e) => handleSelectChange('requiredConfirmations', parseInt(e.target.value))}
+                    placeholder="1"
+                    min="1"
+                    max="12"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Number of block confirmations to wait for
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <Label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={!!localConfig.execute?.tokenApproval}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        handleSelectChange('execute', {
+                          ...localConfig.execute,
+                          tokenApproval: {
+                            token: localConfig.token || 'USDC',
+                            amount: localConfig.amount || '0'
+                          }
+                        });
+                      } else {
+                        const { tokenApproval, ...executeWithoutApproval } = localConfig.execute || {};
+                        handleSelectChange('execute', executeWithoutApproval);
+                      }
+                    }}
+                  />
+                  Token Approval Required
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Enable if the contract needs token approval before execution
+                </p>
+
+                {localConfig.execute?.tokenApproval && (
+                  <div className="grid grid-cols-2 gap-4 pl-6 border-l-2 border-blue-200 bg-blue-50/30 p-3 rounded-r-md">
+                    <div>
+                      <Label>Approval Token</Label>
+                      <Select
+                        value={localConfig.execute.tokenApproval.token}
+                        onValueChange={(value) => handleSelectChange('execute', {
+                          ...localConfig.execute,
+                          tokenApproval: {
+                            ...localConfig.execute.tokenApproval,
+                            token: value
+                          }
+                        })}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {tokenOptions.map((token) => (
+                            <SelectItem key={token.symbol} value={token.symbol}>
+                              {token.symbol}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div>
+                      <Label>Approval Amount</Label>
+                      <Input
+                        value={localConfig.execute.tokenApproval.amount}
+                        onChange={(e) => handleSelectChange('execute', {
+                          ...localConfig.execute,
+                          tokenApproval: {
+                            ...localConfig.execute.tokenApproval,
+                            amount: e.target.value
+                          }
+                        })}
+                        placeholder="Amount to approve"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Bridge Execute Preview */}
+            {localConfig.token && localConfig.amount && localConfig.toChainId && localConfig.execute?.contractAddress && localConfig.execute?.functionName && (
+              <>
+                <Separator />
+                <BridgeExecutePreview
+                  token={localConfig.token}
+                  amount={localConfig.amount === 'fromPrevious' ? '1' : localConfig.amount || ''}
+                  toChainId={localConfig.toChainId}
+                  sourceChains={localConfig.sourceChains}
+                  execute={{
+                    contractAddress: localConfig.execute.contractAddress,
+                    contractAbi: localConfig.execute.contractAbi || [],
+                    functionName: localConfig.execute.functionName,
+                    parameters: localConfig.execute.parameters,
+                    tokenApproval: localConfig.execute.tokenApproval
+                  }}
+                  onSimulate={(result) => {
+                    console.log('Bridge-execute simulation result:', result);
+                  }}
+                />
+              </>
+            )}
           </div>
         );
 

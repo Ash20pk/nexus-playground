@@ -143,6 +143,8 @@ export const WorkflowNode = memo(({ data, selected }: WorkflowNodeProps) => {
         return `${resolve('amount', data.config.amount)} ${data.config.token} via ${data.config.protocol}`;
       case 'custom-contract':
         return data.config.functionName || 'Configure function';
+      case 'bridge-execute':
+        return `${resolve('amount', data.config.amount)} ${data.config.token} → Chain ${data.config.toChainId} + ${data.config.execute?.functionName || 'execute'}()`;
       case 'balance-check':
         const condition = data.config.condition && data.config.condition !== 'none'
           ? ` ${data.config.condition === 'greater' ? '>' : data.config.condition === 'less' ? '<' : '='} ${data.config.value || '0'}`

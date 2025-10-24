@@ -106,6 +106,9 @@ export class WorkflowExecutionEngine {
       case 'simulate-transfer':
         return this.executeSimulateTransfer(node);
 
+      case 'bridge-execute':
+        return this.executeBridgeExecute(node);
+
       default:
         throw new Error(`Unknown node type: ${node.data.type}`);
     }
@@ -980,6 +983,157 @@ export class WorkflowExecutionEngine {
     } catch (error) {
       console.error('❌ SIMULATE TRANSFER - Simulation failed:', error);
       throw new Error(`Transfer simulation failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private async executeBridgeExecute(node: WorkflowNode): Promise<unknown> {
+    const config = node.data.config as BridgeExecuteNodeConfig;
+    const amount = this.resolveValue(config.amount);
+
+    // Validate amount
+    if (!amount || amount === '' || isNaN(Number(amount))) {
+      throw new Error(`Invalid bridge-execute amount: ${amount}. Please provide a valid numeric amount.`);
+    }
+
+    // Validate execute configuration
+    if (!config.execute.contractAddress || !config.execute.functionName) {
+      throw new Error('Bridge-execute requires contract address and function name');
+    }
+
+    // Validate contract address
+    if (!config.execute.contractAddress.startsWith('0x') || config.execute.contractAddress.length !== 42) {
+      throw new Error('Invalid contract address format. Must be a valid Ethereum address (0x...)');
+    }
+
+    console.log('🌉⚙️ NEXUS BRIDGE-EXECUTE - Starting bridge and execute operation:', {
+      token: config.token,
+      amount,
+      resolvedAmount: Number(amount),
+      toChainId: config.toChainId,
+      sourceChains: config.sourceChains,
+      contract: {
+        address: config.execute.contractAddress,
+        function: config.execute.functionName,
+        parameters: config.execute.parameters
+      },
+      tokenApproval: config.execute.tokenApproval
+    });
+
+    try {
+      // Step 1: Prepare execute parameters
+      const executeParams = {
+        contractAddress: config.execute.contractAddress,
+        contractAbi: config.execute.contractAbi,
+        functionName: config.execute.functionName,
+        parameters: config.execute.parameters || [],
+        tokenApproval: config.execute.tokenApproval
+      };
+
+      // Step 2: Prepare bridge and execute input
+      const bridgeExecuteInput = {
+        token: config.token as any,
+        amount: Number(amount),
+        toChainId: config.toChainId,
+        sourceChains: config.sourceChains,
+        execute: executeParams,
+        waitForReceipt: config.waitForReceipt || true,
+        requiredConfirmations: config.requiredConfirmations || 1
+      };
+
+      console.log('🚀 NEXUS BRIDGE-EXECUTE - Calling SDK bridgeAndExecute:', bridgeExecuteInput);
+
+      // Step 3: Set up progress tracking
+      const bridgeExecuteSteps: string[] = [];
+      let currentStep = 0;
+
+      const stepListener = (step: any) => {
+        bridgeExecuteSteps.push(step.typeID);
+        currentStep++;
+        console.log(`🔄 NEXUS BRIDGE-EXECUTE - Step ${currentStep}: ${step.typeID}`, {
+          stepType: step.typeID,
+          explorerURL: step.explorerURL || 'N/A',
+          totalSteps: bridgeExecuteSteps.length
+        });
+
+        switch (step.typeID) {
+          case 'CS':
+            console.log('🔄 NEXUS BRIDGE-EXECUTE - Chain switched');
+            break;
+          case 'AL':
+            console.log('🔄 NEXUS BRIDGE-EXECUTE - Allowance set');
+            break;
+          case 'BS':
+            console.log('🔄 NEXUS BRIDGE-EXECUTE - Balance sufficient - checking bridge skip');
+            break;
+          case 'IS':
+            console.log('✅ NEXUS BRIDGE-EXECUTE - Bridge intent successful');
+            break;
+          case 'ES':
+            console.log('✅ NEXUS BRIDGE-EXECUTE - Execute successful!');
+            if (step.data?.explorerURL) {
+              console.log('🔗 NEXUS BRIDGE-EXECUTE - Execute transaction:', step.data.explorerURL);
+            }
+            break;
+        }
+      };
+
+      const completionListener = (step: any) => {
+        if (step.typeID === 'ES' && step.data?.explorerURL) {
+          console.log('🎉 NEXUS BRIDGE-EXECUTE - Bridge and execute completed successfully!');
+          console.log('🔗 Final transaction URL:', step.data.explorerURL);
+        }
+      };
+
+      // Attach event listeners
+      this.context.nexusSdk.nexusEvents.on('expected_steps', stepListener);
+      this.context.nexusSdk.nexusEvents.on('step_complete', completionListener);
+
+      try {
+        // Step 4: Execute bridge and execute
+        const result = await this.context.nexusSdk.bridgeAndExecute(bridgeExecuteInput);
+
+        console.log('✅ NEXUS BRIDGE-EXECUTE - Operation completed:', result);
+
+        if (!result.success) {
+          throw new Error(`Bridge and execute failed: ${result.error}`);
+        }
+
+        return {
+          type: 'bridge-execute',
+          amount: Number(amount),
+          token: config.token,
+          toChainId: config.toChainId,
+          sourceChains: config.sourceChains,
+          contract: {
+            address: config.execute.contractAddress,
+            function: config.execute.functionName,
+            parameters: config.execute.parameters
+          },
+          transactionHash: result.transactionHash || '',
+          explorerUrl: result.explorerUrl || '',
+          success: true,
+          timestamp: new Date().toISOString(),
+          steps: bridgeExecuteSteps,
+          completedSteps: currentStep,
+          bridgeSkipped: bridgeExecuteSteps.includes('BS') && !bridgeExecuteSteps.includes('IS')
+        };
+      } finally {
+        // Clean up event listeners
+        this.context.nexusSdk.nexusEvents.off('expected_steps', stepListener);
+        this.context.nexusSdk.nexusEvents.off('step_complete', completionListener);
+      }
+    } catch (error) {
+      console.error('❌ NEXUS BRIDGE-EXECUTE - Operation failed with detailed error info:', {
+        error: error,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        token: config.token,
+        amount: Number(amount),
+        toChainId: config.toChainId,
+        contractAddress: config.execute.contractAddress,
+        functionName: config.execute.functionName,
+        sourceChains: config.sourceChains
+      });
+      throw new Error(`Bridge and execute operation failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
