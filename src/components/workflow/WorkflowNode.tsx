@@ -129,7 +129,7 @@ export const WorkflowNode = memo(({ data, selected }: WorkflowNodeProps) => {
   const renderNodeContent = () => {
     switch (data.type) {
       case 'bridge':
-        return `${data.config.token} from Chain ${data.config.fromChain} → ${data.config.toChain}`;
+        return `${resolve('amount', data.config.amount)} ${data.config.token || '?'} from Chain ${data.config.fromChain || '?'} → ${data.config.toChain || '?'}`;
       case 'transfer':
         return `${resolve('amount', data.config.amount)} ${data.config.token} on Chain ${data.config.chain}`;
       case 'swap':

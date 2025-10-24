@@ -14,6 +14,7 @@ import { useNetworkOptions } from '@/hooks/useNetworkOptions';
 import { useChainTokens } from '@/hooks/useChainTokens';
 import { TransferPreview } from './TransferPreview';
 import { SwapPreview } from './SwapPreview';
+import { BridgePreview } from './BridgePreview';
 
 // Ethereum address validation utility
 const isValidEthereumAddress = (address: string): boolean => {
@@ -353,6 +354,18 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
                 </SelectContent>
               </Select>
             </div>
+
+            {/* Bridge Preview */}
+            <BridgePreview
+              token={localConfig.token || ''}
+              amount={localConfig.amount === 'fromPrevious' ? '1' : localConfig.amount || ''}
+              fromChain={localConfig.fromChain || 137}
+              toChain={localConfig.toChain || 42161}
+              sourceChains={localConfig.sourceChains}
+              onSimulate={(result) => {
+                console.log('Bridge simulation result:', result);
+              }}
+            />
           </div>
         );
 

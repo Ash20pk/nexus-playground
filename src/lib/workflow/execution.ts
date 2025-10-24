@@ -119,61 +119,151 @@ export class WorkflowExecutionEngine {
     const config = node.data.config as BridgeNodeConfig;
     const amount = this.resolveValue(config.amount);
 
-    console.log('🌉 BRIDGE DEBUG - Configuration:', {
-      token: config.token,
-      amount,
-      fromChain: config.fromChain,
-      toChain: config.toChain
-    });
-
-    // Check if this token/chain combination is supported for bridging
-    const isSupportedBridge = this.isBridgeSupported(config.token, config.fromChain, config.toChain);
-    console.log('🔍 BRIDGE DEBUG - Is supported combination:', isSupportedBridge);
-
-    if (!isSupportedBridge) {
-      throw new Error(`Bridge not supported for ${config.token} from chain ${config.fromChain} to chain ${config.toChain}. Please check supported token/chain combinations.`);
+    // Validate amount
+    if (!amount || amount === '' || isNaN(Number(amount))) {
+      throw new Error(`Invalid bridge amount: ${amount}. Please provide a valid numeric amount.`);
     }
 
-    console.log('✅ BRIDGE DEBUG - Supported combination, proceeding with direct bridge...');
+    console.log('🌉 NEXUS BRIDGE - Starting bridge operation:', {
+      token: config.token,
+      amount,
+      resolvedAmount: Number(amount),
+      fromChain: config.fromChain,
+      toChain: config.toChain,
+      sourceChains: config.sourceChains
+    });
 
     try {
-      // First check what the SDK actually supports
-      const sdkSupportedData = this.context.nexusSdk.getSwapSupportedChainsAndTokens();
-      console.log('🔍 BRIDGE DEBUG - SDK supported data:', sdkSupportedData);
+      // Step 1: Simulate bridge to check feasibility and get cost preview
+      console.log('🔍 NEXUS BRIDGE - Simulating bridge...');
+      let simulationResult;
 
-      // Get token address for the source chain
-      const tokenAddress = this.getTokenAddress(config.token, config.fromChain);
-      console.log('🔍 BRIDGE DEBUG - Token address resolved:', {
-        symbol: config.token,
-        address: tokenAddress,
-        fromChain: config.fromChain
-      });
+      try {
+        const bridgeParams = {
+          token: config.token as any, // Cast to SDK supported token type
+          amount: Number(amount),
+          chainId: config.toChain,
+          sourceChains: config.sourceChains // Optional source chain restriction
+        };
 
-      // Use the SDK bridge method with correct parameters (token symbol, not address)
-      const result = await this.context.nexusSdk.bridge({
-        token: config.token, // SDK expects token symbol like 'USDC'
-        amount: Number(amount),
-        chainId: config.toChain, // Destination chain ID
-      });
+        simulationResult = await this.context.nexusSdk.simulateBridge(bridgeParams);
 
-      console.log('🌉 BRIDGE DEBUG - Raw result:', result);
+        if (simulationResult) {
+          console.log('✅ NEXUS BRIDGE - Simulation successful:', {
+            destination: simulationResult.intent.destination,
+            sources: simulationResult.intent.sources,
+            fees: simulationResult.intent.fees,
+            isInsufficientBalance: simulationResult.intent.isAvailableBalanceInsufficient
+          });
 
-      if (!result.success) {
-        throw new Error(`Bridge failed: ${result.error}`);
+          if (simulationResult.intent.isAvailableBalanceInsufficient) {
+            const fees = parseFloat(simulationResult.intent.fees.total);
+            throw new Error(`Insufficient balance including fees: need ${Number(amount) + fees} ${config.token} total`);
+          }
+        } else {
+          console.log('⚠️ NEXUS BRIDGE - Simulation returned null, proceeding with caution');
+        }
+      } catch (simError) {
+        console.error('❌ NEXUS BRIDGE - Simulation failed:', simError.message);
+        // Log additional context for debugging
+        console.error('❌ NEXUS BRIDGE - Error context:', {
+          errorType: simError.constructor.name,
+          fullError: simError,
+          bridgeParams: { token: config.token, amount: Number(amount), chainId: config.toChain }
+        });
+        throw new Error(`Bridge simulation failed: ${simError.message}`);
       }
 
-      return {
-        type: 'bridge',
-        amount,
+      // Step 2: Set up progress tracking
+      const bridgeSteps: string[] = [];
+      let currentStep = 0;
+
+      const stepListener = (step: any) => {
+        bridgeSteps.push(step.typeID);
+        currentStep++;
+        console.log(`🔄 NEXUS BRIDGE - Step ${currentStep}: ${step.typeID}`, {
+          stepType: step.typeID,
+          explorerURL: step.explorerURL || 'N/A',
+          totalSteps: bridgeSteps.length
+        });
+
+        switch (step.typeID) {
+          case 'CS':
+            console.log('🔄 NEXUS BRIDGE - Chain switched');
+            break;
+          case 'AL':
+            console.log('🔄 NEXUS BRIDGE - Allowance set');
+            break;
+          case 'BS':
+            console.log('🔄 NEXUS BRIDGE - Balance sufficient');
+            break;
+          case 'IS':
+            console.log('✅ NEXUS BRIDGE - Intent successful!');
+            if (step.data?.explorerURL) {
+              console.log('🔗 NEXUS BRIDGE - Transaction:', step.data.explorerURL);
+            }
+            break;
+        }
+      };
+
+      const completionListener = (step: any) => {
+        if (step.typeID === 'IS' && step.data?.explorerURL) {
+          console.log('🎉 NEXUS BRIDGE - Bridge completed successfully!');
+          console.log('🔗 Explorer URL:', step.data.explorerURL);
+        }
+      };
+
+      // Attach event listeners
+      this.context.nexusSdk.nexusEvents.on('expected_steps', stepListener);
+      this.context.nexusSdk.nexusEvents.on('step_complete', completionListener);
+
+      try {
+        // Step 3: Execute the bridge
+        console.log('🚀 NEXUS BRIDGE - Executing bridge...');
+        const result = await this.context.nexusSdk.bridge({
+          token: config.token as any,
+          amount: Number(amount),
+          chainId: config.toChain,
+          sourceChains: config.sourceChains
+        });
+
+        console.log('✅ NEXUS BRIDGE - Bridge operation completed:', result);
+
+        if (!result.success) {
+          throw new Error(`Bridge failed: ${result.error}`);
+        }
+
+        return {
+          type: 'bridge',
+          amount: Number(amount),
+          token: config.token,
+          fromChain: config.fromChain,
+          toChain: config.toChain,
+          sourceChains: config.sourceChains,
+          transactionHash: result.transactionHash || '',
+          explorerUrl: result.explorerUrl || '',
+          success: true,
+          timestamp: new Date().toISOString(),
+          steps: bridgeSteps,
+          completedSteps: currentStep,
+          fees: simulationResult?.intent.fees
+        };
+      } finally {
+        // Clean up event listeners
+        this.context.nexusSdk.nexusEvents.off('expected_steps', stepListener);
+        this.context.nexusSdk.nexusEvents.off('step_complete', completionListener);
+      }
+    } catch (error) {
+      console.error('❌ NEXUS BRIDGE - Bridge failed with detailed error info:', {
+        error: error,
+        errorMessage: error instanceof Error ? error.message : String(error),
         token: config.token,
+        amount: Number(amount),
         fromChain: config.fromChain,
         toChain: config.toChain,
-        transactionHash: result.transactionHash,
-        success: true
-      };
-    } catch (error) {
-      console.error('🌉 BRIDGE DEBUG - Error details:', error);
-      throw error;
+        sourceChains: config.sourceChains
+      });
+      throw new Error(`Bridge operation failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
