@@ -4,9 +4,10 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { ArrowRight, Loader2, CheckCircle, AlertCircle, TrendingUp, TrendingDown } from 'lucide-react';
+import { ArrowRight, Loader2, CheckCircle, AlertCircle, TrendingUp, TrendingDown, ArrowLeftRight } from 'lucide-react';
 import { useNexus } from '@/provider/NexusProvider';
 import { formatUnits, parseUnits } from 'viem';
+import { Button } from '../ui/button';
 
 interface SwapPreviewProps {
   fromToken: string;
@@ -158,11 +159,28 @@ export const SwapPreview: React.FC<SwapPreviewProps> = ({
   if (!isValidForSimulation()) {
     return (
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <ArrowRight className="h-4 w-4" />
-            Swap Preview
-          </CardTitle>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2">
+              <ArrowLeftRight className="h-4 w-4" />
+              Swap Preview
+            </CardTitle>
+            <Button
+              onClick={runSimulation}
+              disabled={isSimulating}
+              size="sm"
+              variant="outline"
+            >
+              {isSimulating ? (
+                <>
+                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                  Simulating...
+                </>
+              ) : (
+                'Refresh'
+              )}
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground">
@@ -175,11 +193,28 @@ export const SwapPreview: React.FC<SwapPreviewProps> = ({
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <ArrowRight className="h-4 w-4" />
-          {fromChainId === toChainId ? 'Same-Chain Swap Preview' : 'Cross-Chain Swap Preview'}
-        </CardTitle>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <CardTitle className="flex items-center gap-2">
+            <ArrowLeftRight className="h-4 w-4" />
+            {fromChainId === toChainId ? 'Same-Chain Swap Preview' : 'Cross-Chain Swap Preview'}
+          </CardTitle>
+          <Button
+            onClick={runSimulation}
+            disabled={isSimulating}
+            size="sm"
+            variant="outline"
+          >
+            {isSimulating ? (
+              <>
+                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                Simulating...
+              </>
+            ) : (
+              'Refresh'
+            )}
+          </Button>
+        </div>
       </CardHeader>
 
       <CardContent className="space-y-4">
@@ -191,32 +226,6 @@ export const SwapPreview: React.FC<SwapPreviewProps> = ({
             </AlertDescription>
           </Alert>
         )}
-
-        {/* Swap Overview */}
-        <div className="flex items-center justify-between p-4 bg-muted rounded-lg">
-          <div className="text-center">
-            <div className="font-medium">{amount} {fromToken}</div>
-            <div className="text-sm text-muted-foreground">Chain {fromChainId}</div>
-          </div>
-
-          <ArrowRight className="h-5 w-5 text-muted-foreground" />
-
-          <div className="text-center">
-            <div className="font-medium">
-              {isSimulating ? (
-                <div className="flex items-center gap-2">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Calculating...
-                </div>
-              ) : simulationResult ? (
-                `~${parseFloat(simulationResult.intent.destination.amount).toFixed(6)} ${toToken}`
-              ) : (
-                `? ${toToken}`
-              )}
-            </div>
-            <div className="text-sm text-muted-foreground">Chain {toChainId}</div>
-          </div>
-        </div>
 
         {/* Simulation Results */}
         {isSimulating && (
@@ -236,39 +245,31 @@ export const SwapPreview: React.FC<SwapPreviewProps> = ({
         )}
 
         {simulationResult && (
-          <div className="space-y-3">
-            <Alert>
-              <CheckCircle className="h-4 w-4" />
-              <AlertDescription>
-                <div className="space-y-2">
-                  <div><strong>Swap Route Ready</strong></div>
-                  <div className="text-sm space-y-1">
-                    <div>Expected Output: <code className="bg-muted px-1 rounded text-xs">
-                      {parseFloat(simulationResult.intent.destination.amount).toFixed(6)} {simulationResult.intent.destination.symbol}
-                    </code></div>
-                    <div>Estimated Rate: <code className="bg-muted px-1 rounded text-xs">
-                      1 {fromToken} ≈ {(parseFloat(simulationResult.intent.destination.amount) / parseFloat(simulationResult.intent.sources[0].amount)).toFixed(6)} {toToken}
-                    </code></div>
-                  </div>
-                </div>
-              </AlertDescription>
-            </Alert>
+          <div className="space-y-3 bg-card rounded-lg border border-muted-foreground p-4">
 
             {/* Route Details */}
             <div className="space-y-2">
-              <h4 className="text-sm font-medium">Route Details</h4>
+              <h4 className="text-muted-foreground font-semibold">Route Details</h4>
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-sm">
                   <span>Source Chain:</span>
-                  <Badge variant="outline">Chain {simulationResult.intent.sources[0].chainID}</Badge>
+                  <span>Chain {simulationResult.intent.sources[0].chainID}</span>
                 </div>
                 <div className="flex items-center justify-between text-sm">
                   <span>Destination Chain:</span>
-                  <Badge variant="outline">Chain {simulationResult.intent.destination.chainID}</Badge>
+                  <span>Chain {simulationResult.intent.destination.chainID}</span>
                 </div>
                 <div className="flex items-center justify-between text-sm">
                   <span>Max Slippage:</span>
-                  <Badge variant="outline">{slippage}%</Badge>
+                  <span>{slippage}%</span>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span>Expected Output:</span>
+                  <span>{parseFloat(simulationResult.intent.destination.amount).toFixed(6)} {simulationResult.intent.destination.symbol}</span> 
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span>Estimated Rate:</span>
+                  <span>1 {fromToken} ≈ {(parseFloat(simulationResult.intent.destination.amount) / parseFloat(simulationResult.intent.sources[0].amount)).toFixed(6)} {toToken}</span> 
                 </div>
               </div>
             </div>

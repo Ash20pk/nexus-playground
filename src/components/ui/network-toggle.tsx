@@ -22,6 +22,7 @@ export const NetworkToggle: React.FC = () => {
         checked={isMainnet()}
         onCheckedChange={handleToggle}
         aria-label="Toggle between testnet and mainnet"
+        className="border-l border-gray-200"
       />
 
       <div className="flex items-center gap-2">

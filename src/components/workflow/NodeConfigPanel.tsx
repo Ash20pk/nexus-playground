@@ -6,7 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import { Trash2, Unlink } from 'lucide-react';
+import { Trash2, Unlink, TrendingUp } from 'lucide-react';
 import { WorkflowNode } from '@/types/workflow';
 import { useWorkflowStore } from '@/store/workflowStore';
 import { SUPPORTED_CHAINS_IDS, SUPPORTED_TOKENS } from '@/types/workflow';
@@ -16,6 +16,8 @@ import { TransferPreview } from './TransferPreview';
 import { SwapPreview } from './SwapPreview';
 import { BridgePreview } from './BridgePreview';
 import { BridgeExecutePreview } from './BridgeExecutePreview';
+import { StakePreview } from './StakePreview';
+import { DEFI_PROTOCOLS, getProtocolsForChain, getAllProtocolsForChain } from '@/lib/defi-config';
 
 // Ethereum address validation utility
 const isValidEthereumAddress = (address: string): boolean => {
@@ -750,12 +752,68 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="aave">Aave</SelectItem>
-                  <SelectItem value="compound">Compound</SelectItem>
-                  <SelectItem value="uniswap">Uniswap</SelectItem>
+                  {localConfig.chain ?
+                    getAllProtocolsForChain(localConfig.chain).map((protocol) => (
+                      <SelectItem key={protocol.id} value={protocol.id}>
+                        <div className="flex items-center justify-between w-full bg">
+                          <div className="flex items-center gap-2">
+                            <span>{protocol.icon}</span>
+                            <span>{protocol.name}</span>
+                          </div>
+                          {protocol.config.apy && (
+                            <span className="text-xs text-green-600 font-medium ml-2">
+                              {protocol.config.apy.estimated.toFixed(1)}%
+                            </span>
+                          )}
+                        </div>
+                      </SelectItem>
+                    )) :
+                    Object.entries(DEFI_PROTOCOLS).map(([id, protocol]) => (
+                      <SelectItem key={id} value={id}>
+                        <div className="flex items-center gap-2">
+                          <span>{protocol.icon}</span>
+                          <span>{protocol.name}</span>
+                        </div>
+                      </SelectItem>
+                    ))
+                  }
                 </SelectContent>
               </Select>
             </div>
+
+            {/* Simple Protocol Status - matching existing theme */}
+            {localConfig.protocol && localConfig.chain && (() => {
+              const availableProtocols = getProtocolsForChain(localConfig.chain);
+              const isAvailable = availableProtocols.includes(localConfig.protocol);
+              const protocolInfo = DEFI_PROTOCOLS[localConfig.protocol];
+
+              if (!isAvailable) {
+                return (
+                  <p className="text-sm text-red-600 mt-1">
+                    Protocol not available on selected chain
+                  </p>
+                );
+              }
+
+              return (
+                <p className="text-sm text-green-600 mt-1">
+                  ✓ {protocolInfo?.name} available
+                </p>
+              );
+            })()}
+
+            {/* Stake Preview */}
+            {localConfig.token && localConfig.amount && localConfig.chain && localConfig.protocol && (
+              <StakePreview
+                token={localConfig.token}
+                amount={localConfig.amount === 'fromPrevious' ? '1000' : localConfig.amount || ''}
+                chainId={localConfig.chain}
+                protocol={localConfig.protocol as 'aave' | 'compound' | 'yearn'}
+                onSimulate={(result) => {
+                  console.log('Stake simulation result:', result);
+                }}
+              />
+            )}
           </div>
         );
 

@@ -25,7 +25,6 @@ import { Workflow, WorkflowTemplate } from '@/types/workflow';
 import { useWorkflowStore } from '@/store/workflowStore';
 import { useRouter } from 'next/navigation';
 import ConnectWallet from '../blocks/connect-wallet';
-import { NexusSDKStatus } from '../NexusSDKStatus';
 import { toast } from 'sonner';
 
 interface WorkflowListProps {
@@ -175,8 +174,6 @@ export const WorkflowList: React.FC<WorkflowListProps> = ({ onSelectWorkflow }) 
 
       {/* Content */}
       <div className="max-w-7xl mx-auto p-6 space-y-6">
-        {/* SDK Status */}
-        <NexusSDKStatus />
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-2xl font-bold text-gray-900">My Workflows</h2>

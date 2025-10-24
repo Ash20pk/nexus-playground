@@ -61,7 +61,7 @@ export async function GET(
       success: true,
       data: workflowExecutions
     });
-  } catch (error) {
+  } catch {
     return NextResponse.json({
       success: false,
       error: 'Failed to fetch executions'

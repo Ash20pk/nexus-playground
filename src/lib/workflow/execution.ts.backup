@@ -13,7 +13,6 @@ import {
   SimulateBridgeNodeConfig,
   SimulateTransferNodeConfig
 } from '@/types/workflow';
-import { DEFI_PROTOCOLS, getProtocolConfig } from '@/lib/defi-config';
 // Network store is used in workflowStore.ts to pass networkType to context
 
 export interface WorkflowExecutionContext {
@@ -1114,22 +1113,20 @@ export class WorkflowExecutionEngine {
 
   private async executeStake(node: WorkflowNode): Promise<unknown> {
     const config = node.data.config as StakeNodeConfig;
-    console.log('🏦 WORKFLOW EXECUTION - Starting stake node:', { nodeId: node.id, config });
+    console.log('🏦 WORKFLOW EXECUTION - Starting stake node:', {
+      nodeId: node.id,
+      config: config
+    });
 
     // Validation
-    if (!config.chain || !config.token || !config.protocol) {
-      throw new Error('Chain, token, and protocol are required for stake operation');
+    if (!config.chain) {
+      throw new Error('Chain is required for stake operation');
     }
-
-    // Get protocol configuration from DeFi config
-    const protocolConfig = getProtocolConfig(config.protocol, config.chain);
-    if (!protocolConfig) {
-      throw new Error(`Protocol ${config.protocol} is not available on chain ${config.chain}`);
+    if (!config.token) {
+      throw new Error('Token is required for stake operation');
     }
-
-    const protocolInfo = DEFI_PROTOCOLS[config.protocol];
-    if (!protocolInfo) {
-      throw new Error(`Unknown protocol: ${config.protocol}`);
+    if (!config.protocol) {
+      throw new Error('Protocol is required for stake operation');
     }
 
     // Resolve amount - handle 'fromPrevious' or static values
@@ -1148,34 +1145,94 @@ export class WorkflowExecutionEngine {
       throw new Error(`Invalid amount for stake: ${amount}`);
     }
 
-    // Convert amount to proper token units (with decimals)
-    const tokenDecimals = this.getTokenDecimals(config.token);
-    const amountInTokenUnits = this.parseUnits(amount, tokenDecimals);
+    // Get protocol configuration
+    const protocolConfigs = {
+      aave: {
+        name: 'Aave V3',
+        contracts: {
+          1: '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2', // Ethereum
+          137: '0x794a61358D6845594F94dc1DB02A252b5b4814aD', // Polygon
+          42161: '0x794a61358D6845594F94dc1DB02A252b5b4814aD', // Arbitrum
+          10: '0x794a61358D6845594F94dc1DB02A252b5b4814aD', // Optimism
+          8453: '0xA238Dd80C259a72e81d7e4664a9801593F98d1c5' // Base
+        },
+        functionName: 'supply',
+        abi: [{
+          name: 'supply',
+          type: 'function',
+          stateMutability: 'nonpayable',
+          inputs: [
+            { name: 'asset', type: 'address' },
+            { name: 'amount', type: 'uint256' },
+            { name: 'onBehalfOf', type: 'address' },
+            { name: 'referralCode', type: 'uint16' }
+          ]
+        }]
+      },
+      compound: {
+        name: 'Compound V3',
+        contracts: {
+          1: '0xc3d688B66703497DAA19211EEdff47f25384cdc3', // Ethereum USDC
+          137: '0xF25212E676D1F7F89Cd72fFEe66158f541246445', // Polygon USDC
+          42161: '0xA5EDBDD9646f8dFF606d7448e414884C7d905dCA', // Arbitrum USDC
+          8453: '0x46e6b214b524310239732D51387075E0e70970bf' // Base USDC
+        },
+        functionName: 'supply',
+        abi: [{
+          inputs: [
+            { name: 'asset', type: 'address' },
+            { name: 'amount', type: 'uint256' }
+          ],
+          name: 'supply',
+          stateMutability: 'nonpayable',
+          type: 'function'
+        }]
+      },
+      yearn: {
+        name: 'Yearn Finance',
+        contracts: {
+          1: '0xda816459F1AB5631232FE5e97a05BBBb94970c95', // Ethereum USDC Vault
+          137: '0xB199508B3B20d0D9d4059e7ed1E2D6b8a1BB76Dd', // Polygon USDC Vault
+          42161: '0xd9788f3931Ede4D5018184E198699dC6d66C1915' // Arbitrum USDC Vault
+        },
+        functionName: 'deposit',
+        abi: [{
+          inputs: [
+            { name: '_amount', type: 'uint256' },
+            { name: '_recipient', type: 'address' }
+          ],
+          name: 'deposit',
+          stateMutability: 'nonpayable',
+          type: 'function'
+        }]
+      }
+    };
 
-    // Get token contract address
-    const tokenAddress = this.getTokenAddress(config.token, config.chain);
+    const protocolConfig = protocolConfigs[config.protocol as keyof typeof protocolConfigs];
+    if (!protocolConfig) {
+      throw new Error(`Unsupported protocol: ${config.protocol}`);
+    }
 
-    console.log('🏦 WORKFLOW EXECUTION - Amount conversion:', {
-      originalAmount: amount,
-      tokenDecimals,
-      amountInTokenUnits,
-      tokenSymbol: config.token,
-      tokenAddress
-    });
+    const contractAddress = protocolConfig.contracts[config.chain as keyof typeof protocolConfig.contracts];
+    if (!contractAddress) {
+      throw new Error(`Protocol ${config.protocol} not available on chain ${config.chain}`);
+    }
 
     console.log('🏦 WORKFLOW EXECUTION - Stake configuration:', {
-      protocol: protocolInfo.name,
+      protocol: protocolConfig.name,
       chain: config.chain,
-      contractAddress: protocolConfig.contractAddress,
+      contractAddress,
       token: config.token,
-      amount: amount,
-      apy: protocolConfig.apy?.estimated,
-      tvl: protocolConfig.tvl
+      amount: amount
     });
 
     try {
-      // Update progress - node is executing
-      console.log(`🏦 WORKFLOW EXECUTION - Starting stake: ${amount} ${config.token} on ${protocolInfo.name}`);
+      // Update progress
+      this.updateNodeProgress(node.id, {
+        status: 'running',
+        message: `Staking ${amount} ${config.token} on ${protocolConfig.name}`,
+        progress: 10
+      });
 
       // Check SDK initialization
       if (!this.context.nexusSdk) {
@@ -1189,79 +1246,69 @@ export class WorkflowExecutionEngine {
       }
       const userAddress = accounts[0];
 
-      console.log(`🏦 WORKFLOW EXECUTION - Executing stake transaction on ${protocolInfo.name}`);
-
-      // Set allowance hook to handle token approvals automatically
-      this.context.nexusSdk.setOnAllowanceHook(({ allow, sources }) => {
-        console.log('🎫 ALLOWANCE - Token approval required for stake:', sources);
-
-        sources.forEach(source => {
-          console.log(`  Token: ${source.token.symbol} on chain ${source.chain.name}`);
-          console.log(`  Current allowance: ${source.allowance.current}`);
-          console.log(`  Minimum needed: ${source.allowance.minimum}`);
-        });
-
-        // Auto-approve the required amount
-        allow(['min']); // Approve minimum needed amount
-      });
-
-      // Prepare execute input based on protocol
-      let executeInput: any;
+      // Build function parameters based on protocol
+      let functionParams: any[];
+      const numericAmount = Number(amount);
 
       if (config.protocol === 'aave') {
-        executeInput = {
-          toChainId: config.chain,
-          contractAddress: protocolConfig.contractAddress,
-          contractAbi: protocolConfig.abi,
-          functionName: protocolConfig.functionName,
-          buildFunctionParams: (sdkTokenAddress: string, amt: string, chainId: number, userAddr: string) => {
-            console.log('🔧 Building Aave function params for stake:', { resolvedTokenAddress: tokenAddress, sdkTokenAddress, amt: amountInTokenUnits, chainId, userAddr });
-            return {
-              functionParams: [tokenAddress, amountInTokenUnits, userAddr, 0] // asset, amount, onBehalfOf, referralCode
-            };
-          },
-          tokenApproval: {
-            token: config.token,
-            amount: amountInTokenUnits
-          }
-        };
+        // Aave requires: asset, amount, onBehalfOf, referralCode
+        functionParams = ['{{tokenAddress}}', '{{amount}}', userAddress, 0];
       } else if (config.protocol === 'compound') {
-        executeInput = {
-          toChainId: config.chain,
-          contractAddress: protocolConfig.contractAddress,
-          contractAbi: protocolConfig.abi,
-          functionName: protocolConfig.functionName,
-          buildFunctionParams: (sdkTokenAddress: string, amt: string, chainId: number, userAddr: string) => {
-            console.log('🔧 Building Compound function params for stake:', { resolvedTokenAddress: tokenAddress, sdkTokenAddress, amt: amountInTokenUnits, chainId, userAddr });
-            return {
-              functionParams: [tokenAddress, amountInTokenUnits] // asset, amount
-            };
-          },
-          tokenApproval: {
-            token: config.token,
-            amount: amountInTokenUnits
-          }
-        };
+        // Compound requires: asset, amount
+        functionParams = ['{{tokenAddress}}', '{{amount}}'];
       } else if (config.protocol === 'yearn') {
-        executeInput = {
-          toChainId: config.chain,
-          contractAddress: protocolConfig.contractAddress,
-          contractAbi: protocolConfig.abi,
-          functionName: protocolConfig.functionName,
-          buildFunctionParams: (sdkTokenAddress: string, amt: string, chainId: number, userAddr: string) => {
-            console.log('🔧 Building Yearn function params for stake:', { resolvedTokenAddress: tokenAddress, sdkTokenAddress, amt: amountInTokenUnits, chainId, userAddr });
-            return {
-              functionParams: [amountInTokenUnits, userAddr] // assets, receiver (Yearn doesn't need token address in params)
-            };
-          },
-          tokenApproval: {
-            token: config.token,
-            amount: amountInTokenUnits
-          }
-        };
+        // Yearn requires: amount, recipient
+        functionParams = ['{{amount}}', userAddress];
       } else {
-        throw new Error(`Unsupported protocol: ${config.protocol}`);
+        throw new Error(`Unknown protocol parameter format: ${config.protocol}`);
       }
+
+      this.updateNodeProgress(node.id, {
+        status: 'running',
+        message: `Executing stake transaction on ${protocolConfig.name}`,
+        progress: 30
+      });
+
+      // Prepare execute input
+      const executeInput = {
+        toChainId: config.chain,
+        contractAddress,
+        contractAbi: protocolConfig.abi,
+        functionName: protocolConfig.functionName,
+        buildFunctionParams: (token: string, amt: string, chainId: number, userAddr: string) => {
+          console.log('🔧 Building function params for stake:', { token, amt, chainId, userAddr });
+
+          // For protocols that need token address, use the placeholder system
+          if (config.protocol === 'aave' || config.protocol === 'compound') {
+            return {
+              functionParams: functionParams.map(param => {
+                if (param === '{{tokenAddress}}') {
+                  // This would need to be resolved by the SDK based on token and chainId
+                  return param;
+                }
+                if (param === '{{amount}}') {
+                  return param;
+                }
+                return param;
+              })
+            };
+          } else {
+            // Yearn doesn't need token address
+            return {
+              functionParams: functionParams.map(param => {
+                if (param === '{{amount}}') {
+                  return param;
+                }
+                return param;
+              })
+            };
+          }
+        },
+        tokenApproval: {
+          token: config.token as any,
+          amount: amount
+        }
+      };
 
       console.log('🔄 WORKFLOW EXECUTION - Calling nexusSdk.execute for stake:', executeInput);
 
@@ -1289,7 +1336,11 @@ export class WorkflowExecutionEngine {
           progress = 90;
         }
 
-        console.log(`🏦 WORKFLOW EXECUTION - Progress: ${message} (${progress}%)`);
+        this.updateNodeProgress(node.id, {
+          status: 'running',
+          message,
+          progress
+        });
       };
 
       // Add event listener
@@ -1303,27 +1354,29 @@ export class WorkflowExecutionEngine {
 
       console.log('✅ WORKFLOW EXECUTION - Stake operation successful:', result);
 
-      console.log(`✅ WORKFLOW EXECUTION - Successfully staked ${amount} ${config.token} on ${protocolInfo.name}`);
+      // Update progress to completion
+      this.updateNodeProgress(node.id, {
+        status: 'completed',
+        message: `Successfully staked ${amount} ${config.token} on ${protocolConfig.name}`,
+        progress: 100
+      });
 
       // Store results for potential use by subsequent nodes
       const nodeResults = {
         success: true,
         transactionHash: result?.transactionHash || result?.hash,
-        protocol: protocolInfo.name,
-        protocolId: config.protocol,
-        contractAddress: protocolConfig.contractAddress,
+        protocol: protocolConfig.name,
+        contractAddress,
         token: config.token,
         amount: Number(amount),
         chain: config.chain,
-        apy: protocolConfig.apy?.estimated,
-        tvl: protocolConfig.tvl,
         timestamp: new Date().toISOString(),
         result: result
       };
 
       this.context.results[node.id] = nodeResults;
       this.context.results[`${node.id}_amount`] = Number(amount);
-      this.context.results[`${node.id}_protocol`] = protocolInfo.name;
+      this.context.results[`${node.id}_protocol`] = protocolConfig.name;
 
       return nodeResults;
 
@@ -1334,34 +1387,24 @@ export class WorkflowExecutionEngine {
       console.error('❌ WORKFLOW EXECUTION - Stake operation failed:', error);
 
       const errorMessage = error instanceof Error ? error.message : String(error);
-
-      // Provide better error messages for common DeFi issues
-      let userFriendlyMessage = errorMessage;
-      if (errorMessage.includes('exceed deposit limit')) {
-        userFriendlyMessage = `The ${protocolInfo.name} vault has reached its deposit limit. Try a smaller amount or use a different protocol.`;
-      } else if (errorMessage.includes('insufficient allowance')) {
-        userFriendlyMessage = `Token approval failed. Please ensure you have approved the protocol to spend your ${config.token}.`;
-      } else if (errorMessage.includes('insufficient balance')) {
-        userFriendlyMessage = `Insufficient ${config.token} balance. You need at least ${amount} ${config.token} plus gas fees.`;
-      } else if (errorMessage.includes('protocol paused')) {
-        userFriendlyMessage = `The ${protocolInfo.name} protocol is currently paused. Please try again later.`;
-      }
-
-      console.error(`❌ WORKFLOW EXECUTION - Stake operation failed: ${userFriendlyMessage}`);
+      this.updateNodeProgress(node.id, {
+        status: 'error',
+        message: `Stake operation failed: ${errorMessage}`,
+        progress: 0
+      });
 
       // Store error details for debugging
       this.context.results[node.id] = {
         success: false,
         error: error,
-        errorMessage: errorMessage,
-        protocol: protocolInfo.name,
-        protocolId: config.protocol,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        protocol: config.protocol,
         token: config.token,
         amount: Number(amount),
         chain: config.chain
-      };
+      });
 
-      throw new Error('Stake operation failed: ' + userFriendlyMessage);
+      throw new Error(`Stake operation failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

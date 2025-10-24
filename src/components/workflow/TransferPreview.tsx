@@ -214,14 +214,12 @@ This could be due to:
 • Check your balance breakdown below`;
           }
         } else {
-          errorMessage = `💸 Not Enough ${token}
-
-You need ${amount} ${token} but only have ${userBalance?.balance || '0'} ${token} total.
+          errorMessage = `💸 Not Enough ${token} -> You need ${amount} ${token} but only have ${userBalance?.balance || '0'} ${token} total.
 
 💡 Get more ${token}:
-• Buy ${token} on an exchange
-• Bridge ${token} from another wallet
-• Use a different token or amount`;
+  • Buy ${token} on an exchange
+  • Bridge ${token} from another wallet
+  • Use a different token or amount`;
         }
       } else if (errorMessage.includes('internal error')) {
         errorMessage = `🔄 Temporary Issue
@@ -456,16 +454,16 @@ The simulation couldn't complete due to network or system issues.
         )}
 
         {simulationError && (
-          <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded">
-            <div className="flex items-start gap-2">
-              <AlertCircle className="h-4 w-4 text-red-500 mt-0.5" />
-              <div>
-                <p className="text-sm font-medium text-red-800 dark:text-red-200">
-                  Simulation Failed
+          <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="h-5 w-5 text-red-500 mt-0.5 flex-shrink-0" />
+              <div className="flex-1 space-y-3">
+                <p className="text-sm font-semibold text-red-800 dark:text-red-200">
+                  Transfer Cannot Be Completed
                 </p>
-                <p className="text-xs text-red-600 dark:text-red-300 mt-1">
+                <div className="text-sm text-red-700 dark:text-red-300 whitespace-pre-line leading-relaxed">
                   {simulationError}
-                </p>
+                </div>
               </div>
             </div>
           </div>
