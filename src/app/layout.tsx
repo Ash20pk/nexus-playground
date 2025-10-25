@@ -3,6 +3,7 @@ import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { Web3Provider } from "@/provider/Web3Provider";
 import { Toaster } from "sonner";
+import { ConsoleInterceptor } from "@/components/ConsoleInterceptor";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -53,6 +54,7 @@ export default function RootLayout({
       <body
         className={`${inter.variable} ${jetbrainsMono.variable} antialiased`}
       >
+        <ConsoleInterceptor />
         <Web3Provider>
           {children}
           <Toaster />

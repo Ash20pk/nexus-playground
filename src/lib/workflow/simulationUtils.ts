@@ -196,12 +196,11 @@ export const handleSimulationResult = async (
       };
     }
   } catch (error) {
-    console.error(`❌ ${operation.toUpperCase()} - Simulation error:`, error);
-
     const handled = handleSimulationError(error as Error, operation);
 
     if (handled.isDirectOperation) {
-      // "ca not applicable" case - this is actually success
+      // "ca not applicable" case - this is actually success, not an error
+      console.log(`✅ ${operation.toUpperCase()} - Direct operation will be used (no chain abstraction needed)`);
       return {
         type: 'DIRECT_OPERATION',
         simulation: null,
@@ -210,7 +209,8 @@ export const handleSimulationResult = async (
         isInsufficientBalance: false // Will be checked separately
       };
     } else {
-      // Actual error
+      // Actual error that needs to be logged
+      console.error(`❌ ${operation.toUpperCase()} - Simulation error:`, error);
       return {
         type: 'ERROR',
         simulation: null,

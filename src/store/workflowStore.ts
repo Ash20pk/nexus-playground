@@ -554,23 +554,71 @@ export const useWorkflowStore = create<WorkflowState>()(
 
         const result = await response.json();
 
+        // Determine final status based on node execution results, not thrown errors
         set((state) => {
           state.isExecuting = false;
           state.executingNodeId = null;
           if (state.execution) {
-            state.execution.status = executionResult.status;
+            // Check if any nodes actually failed
+            const nodeStatuses = Object.values(state.nodeExecutionStatus);
+            const hasFailedNodes = nodeStatuses.some(status => status === 'error');
+            const allNodesCompleted = nodeStatuses.length > 0 && nodeStatuses.every(status => status === 'success');
+            
+            // Only mark as failed if nodes actually failed, not if there were auxiliary errors
+            if (hasFailedNodes) {
+              state.execution.status = 'failed';
+            } else if (allNodesCompleted || executionResult.status === 'completed') {
+              state.execution.status = 'completed';
+            } else {
+              state.execution.status = executionResult.status;
+            }
+            
             state.execution.results = executionResult.results;
             state.execution.error = executionResult.error;
             state.execution.completedAt = new Date();
+            
+            console.log('✅ Execution completed - Final status:', {
+              executionStatus: state.execution.status,
+              nodeStatuses: state.nodeExecutionStatus,
+              hasFailedNodes,
+              allNodesCompleted
+            });
           }
         });
       } catch (error) {
+        // Even if execution throws, check node statuses to determine actual failure
         set((state) => {
           state.isExecuting = false;
+          
           if (state.execution) {
-            state.execution.status = 'failed';
-            state.execution.error = error instanceof Error ? error.message : 'Unknown error';
+            // Check if any nodes actually failed
+            const nodeStatuses = Object.values(state.nodeExecutionStatus);
+            const hasFailedNodes = nodeStatuses.some(status => status === 'error');
+            const allNodesCompleted = nodeStatuses.length > 0 && nodeStatuses.every(status => status === 'success');
+            
+            // Only mark as failed if nodes actually failed
+            if (hasFailedNodes) {
+              state.execution.status = 'failed';
+              state.execution.error = error instanceof Error ? error.message : 'Unknown error';
+            } else if (allNodesCompleted) {
+              // All nodes succeeded, ignore the auxiliary error
+              state.execution.status = 'completed';
+              console.warn('⚠️ Execution threw error but all nodes succeeded - marking as completed:', error);
+            } else {
+              // Partial execution
+              state.execution.status = 'failed';
+              state.execution.error = error instanceof Error ? error.message : 'Unknown error';
+            }
+            
             state.execution.completedAt = new Date();
+            
+            console.log('✅ Execution error caught - Final status:', {
+              executionStatus: state.execution.status,
+              nodeStatuses: state.nodeExecutionStatus,
+              hasFailedNodes,
+              allNodesCompleted,
+              error: error instanceof Error ? error.message : error
+            });
           }
         });
       }
