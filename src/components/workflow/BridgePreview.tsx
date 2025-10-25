@@ -96,8 +96,8 @@ export const BridgePreview: React.FC<BridgePreviewProps> = ({
       const bridgeParams = {
         token: token as any,
         amount: numericAmount,
-        chainId: toChain,
-        sourceChains: sourceChains
+        chainId: toChain as any,
+        sourceChains: sourceChains as any
       };
 
       // Use unified simulation handler

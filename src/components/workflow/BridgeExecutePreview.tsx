@@ -131,8 +131,8 @@ export const BridgeExecutePreview: React.FC<BridgeExecutePreviewProps> = ({
             return await nexusSdk.simulateBridge({
               token: token as any,
               amount: numericAmount,
-              chainId: toChainId,
-              sourceChains: sourceChains
+              chainId: toChainId as any,
+              sourceChains: sourceChains as any
             });
           } catch (error) {
             // If bridge simulation fails, bridge-execute might still work

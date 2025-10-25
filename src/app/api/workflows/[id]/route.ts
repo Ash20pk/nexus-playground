@@ -3,14 +3,15 @@ import { Workflow } from '@/types/workflow';
 
 // In-memory storage for demo purposes
 // In production, use a proper database
-let workflows: Workflow[] = [];
+const workflows: Workflow[] = [];
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const workflow = workflows.find(w => w.id === params.id);
+    const { id } = await params;
+    const workflow = workflows.find(w => w.id === id);
 
     if (!workflow) {
       return NextResponse.json({
@@ -33,11 +34,12 @@ export async function GET(
 
 export async function PUT(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const updates: Partial<Workflow> = await request.json();
-    const workflowIndex = workflows.findIndex(w => w.id === params.id);
+    const workflowIndex = workflows.findIndex(w => w.id === id);
 
     if (workflowIndex === -1) {
       return NextResponse.json({
@@ -66,10 +68,11 @@ export async function PUT(
 
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const workflowIndex = workflows.findIndex(w => w.id === params.id);
+    const { id } = await params;
+    const workflowIndex = workflows.findIndex(w => w.id === id);
 
     if (workflowIndex === -1) {
       return NextResponse.json({

@@ -487,7 +487,7 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
                       onClick={() => {
                         const currentSources = localConfig.sourceChains || [];
                         const newSources = isSelected
-                          ? currentSources.filter(id => id !== chain.id)
+                          ? currentSources.filter((id: number) => id !== chain.id)
                           : [...currentSources, chain.id];
                         handleSelectChange('sourceChains', newSources.length > 0 ? newSources : undefined);
                       }}
@@ -499,7 +499,7 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
               </div>
               {localConfig.sourceChains && localConfig.sourceChains.length > 0 && (
                 <p className="text-sm text-blue-600 mt-2">
-                  Transfer will only use funds from: {localConfig.sourceChains.map(id =>
+                  Transfer will only use funds from: {localConfig.sourceChains.map((id: number) =>
                     chainOptions.find(c => c.id === id)?.name || id
                   ).join(', ')}
                 </p>
@@ -968,7 +968,7 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
                         onClick={() => {
                           const currentSources = localConfig.sourceChains || [];
                           const newSources = isSelected
-                            ? currentSources.filter(id => id !== chain.id)
+                            ? currentSources.filter((id: number) => id !== chain.id)
                             : [...currentSources, chain.id];
                           handleSelectChange('sourceChains', newSources.length > 0 ? newSources : undefined);
                         }}
@@ -980,7 +980,7 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
                 </div>
                 {localConfig.sourceChains && localConfig.sourceChains.length > 0 && (
                   <p className="text-sm text-blue-600 mt-2">
-                    Will use funds from: {localConfig.sourceChains.map(id =>
+                    Will use funds from: {localConfig.sourceChains.map((id: number) =>
                       chainOptions.find(c => c.id === id)?.name || id
                     ).join(', ')}
                   </p>
