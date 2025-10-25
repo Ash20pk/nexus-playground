@@ -1,6 +1,17 @@
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { v4 as uuidv4 } from 'uuid';
+
+export interface NodeError {
+  message: string;
+  details?: string;
+  timestamp: string;
+  errorType?: 'validation' | 'network' | 'execution' | 'timeout' | 'unknown';
+  originalError?: any;
+  context?: Record<string, any>;
+  suggestions?: string[];
+  retryable?: boolean;
+}
 import {
   Workflow,
   WorkflowNode,
@@ -25,6 +36,7 @@ interface WorkflowState {
   selectedNodeId: string | null;
   executingNodeId: string | null;
   nodeExecutionStatus: Record<string, 'success' | 'error' | null>; // Track each node's execution result
+  nodeErrors: Record<string, NodeError>; // Detailed error information for each failed node
 
   // Saved workflows
   savedWorkflows: Workflow[];
@@ -42,7 +54,10 @@ interface WorkflowState {
   deleteNode: (nodeId: string) => void;
   setSelectedNode: (nodeId: string | null) => void;
   setExecutingNode: (nodeId: string | null) => void;
+  migrateSplitNodes: () => void;
   setNodeExecutionStatus: (nodeId: string, status: 'success' | 'error' | null) => void;
+  setNodeError: (nodeId: string, error: NodeError) => void;
+  clearNodeError: (nodeId: string) => void;
   clearExecutionStatus: () => void;
 
   // Edge operations
@@ -164,9 +179,7 @@ const createDefaultNode = (
     },
     split: {
       label: 'Split',
-      config: {
-        branches: 2
-      }
+      config: {}
     },
     aggregate: {
       label: 'Aggregate',
@@ -204,6 +217,25 @@ const createDefaultNode = (
 
   const nodeConfig = nodeConfigs[type];
 
+  // Define outputs based on node type
+  let outputs;
+  if (type === 'split') {
+    outputs = [
+      { name: 'output_1', type: 'transaction' },
+      { name: 'output_2', type: 'transaction' }
+    ];
+  } else {
+    outputs = [{ name: 'output', type: 'transaction' }];
+  }
+
+  // Define inputs based on node type
+  let inputs;
+  if (type === 'trigger') {
+    inputs = [];
+  } else {
+    inputs = [{ name: 'input', type: 'transaction', required: true }];
+  }
+
   return {
     id,
     type: 'workflowNode',
@@ -213,8 +245,8 @@ const createDefaultNode = (
       type,
       label: nodeConfig.label,
       config: nodeConfig.config,
-      outputs: type === 'trigger' ? [{ name: 'output', type: 'transaction' }] : [{ name: 'output', type: 'transaction' }],
-      inputs: type === 'trigger' ? [] : [{ name: 'input', type: 'transaction', required: true }]
+      outputs,
+      inputs
     }
   };
 };
@@ -227,6 +259,7 @@ export const useWorkflowStore = create<WorkflowState>()(
     selectedNodeId: null,
     executingNodeId: null,
     nodeExecutionStatus: {},
+    nodeErrors: {},
     savedWorkflows: [],
 
     createNewWorkflow: (name: string) => {
@@ -313,12 +346,33 @@ export const useWorkflowStore = create<WorkflowState>()(
       set((state) => {
         if (state.currentWorkflow) {
           const newNode = createDefaultNode(type, position);
+          console.log('🔧 Creating new node:', type, 'with outputs:', newNode.data.outputs);
           state.currentWorkflow.nodes.push(newNode);
           state.selectedNodeId = newNode.id;
           state.currentWorkflow.updated = new Date();
         }
       });
       // Auto-save to localStorage
+      get().saveCurrentWorkflow();
+    },
+
+    // Migration function to update existing split nodes
+    migrateSplitNodes: () => {
+      set((state) => {
+        if (state.currentWorkflow) {
+          state.currentWorkflow.nodes.forEach(node => {
+            if (node.data.type === 'split' && node.data.outputs?.length === 1) {
+              console.log('🔄 Migrating split node to have 2 outputs:', node.id);
+              node.data.outputs = [
+                { name: 'output_1', type: 'transaction' },
+                { name: 'output_2', type: 'transaction' }
+              ];
+              node.data.config = {}; // Clean config
+            }
+          });
+          state.currentWorkflow.updated = new Date();
+        }
+      });
       get().saveCurrentWorkflow();
     },
 
@@ -483,7 +537,8 @@ export const useWorkflowStore = create<WorkflowState>()(
           results: {},
           networkType,
           onNodeExecuting: (nodeId: string | null) => get().setExecutingNode(nodeId),
-          onNodeStatus: (nodeId: string, status: 'success' | 'error' | null) => get().setNodeExecutionStatus(nodeId, status)
+          onNodeStatus: (nodeId: string, status: 'success' | 'error' | null) => get().setNodeExecutionStatus(nodeId, status),
+          onNodeError: (nodeId: string, error: NodeError) => get().setNodeError(nodeId, error)
         };
         const engine = new WorkflowExecutionEngine(context);
         const executionResult = await engine.execute(state.currentWorkflow);
@@ -546,6 +601,37 @@ export const useWorkflowStore = create<WorkflowState>()(
           state.savedWorkflows = JSON.parse(saved);
         });
       }
+    },
+
+    setNodeExecutionStatus: (nodeId: string, status: 'success' | 'error' | null) => {
+      set((state) => {
+        state.nodeExecutionStatus[nodeId] = status;
+      });
+    },
+
+    setNodeError: (nodeId: string, error: NodeError) => {
+      set((state) => {
+        state.nodeErrors[nodeId] = error;
+        state.nodeExecutionStatus[nodeId] = 'error';
+      });
+    },
+
+    clearNodeError: (nodeId: string) => {
+      set((state) => {
+        delete state.nodeErrors[nodeId];
+        if (state.nodeExecutionStatus[nodeId] === 'error') {
+          state.nodeExecutionStatus[nodeId] = null;
+        }
+      });
+    },
+
+    clearExecutionStatus: () => {
+      set((state) => {
+        state.nodeExecutionStatus = {};
+        state.nodeErrors = {};
+        state.isExecuting = false;
+        state.executingNodeId = null;
+      });
     }
   }))
 );

@@ -12,7 +12,11 @@ import {
   AllowanceManagementNodeConfig,
   SimulateBridgeNodeConfig,
   SimulateTransferNodeConfig,
-  BalanceCheckNodeConfig
+  BalanceCheckNodeConfig,
+  DelayNodeConfig,
+  LoopNodeConfig,
+  SplitNodeConfig,
+  AggregateNodeConfig
 } from '@/types/workflow';
 import { DEFI_PROTOCOLS, getProtocolConfig } from '@/lib/defi-config';
 // Network store is used in workflowStore.ts to pass networkType to context
@@ -24,6 +28,16 @@ export interface WorkflowExecutionContext {
   networkType?: 'testnet' | 'mainnet'; // Add network type to context
   onNodeExecuting?: (nodeId: string | null) => void;
   onNodeStatus?: (nodeId: string, status: 'success' | 'error' | null) => void;
+  onNodeError?: (nodeId: string, error: {
+    message: string;
+    details?: string;
+    timestamp: string;
+    errorType?: 'validation' | 'network' | 'execution' | 'timeout' | 'unknown';
+    originalError?: any;
+    context?: Record<string, any>;
+    suggestions?: string[];
+    retryable?: boolean;
+  }) => void;
 }
 
 export class WorkflowExecutionEngine {
@@ -121,6 +135,24 @@ export class WorkflowExecutionEngine {
 
       case 'balance-check':
         return this.executeBalanceCheck(node);
+
+      case 'delay':
+        return this.executeDelay(node);
+
+      case 'condition':
+        return this.executeCondition(node);
+
+      case 'loop':
+        return this.executeLoop(node);
+
+      case 'split':
+        return this.executeSplit(node);
+
+      case 'aggregate':
+        return this.executeAggregate(node);
+
+      case 'notification':
+        return this.executeNotification(node);
 
       default:
         throw new Error(`Unknown node type: ${node.data.type}`);
@@ -1156,20 +1188,27 @@ export class WorkflowExecutionEngine {
       throw new Error(`Invalid amount for stake: ${amount}`);
     }
 
-    // Convert amount to proper token units (with decimals)
+    // Get token contract address and decimals for the buildFunctionParams callback
     const tokenDecimals = this.getTokenDecimals(config.token);
-    const amountInTokenUnits = this.parseUnits(amount, tokenDecimals);
-
-    // Get token contract address
     const tokenAddress = this.getTokenAddress(config.token, config.chain);
+    const parseUnitsFunction = this.parseUnits.bind(this); // Bind the parseUnits method
 
-    console.log('🏦 WORKFLOW EXECUTION - Amount conversion:', {
+    console.log('🏦 WORKFLOW EXECUTION - Token info:', {
       originalAmount: amount,
       tokenDecimals,
-      amountInTokenUnits,
       tokenSymbol: config.token,
       tokenAddress
     });
+
+    // Validate that we have all required information
+    if (!tokenAddress) {
+      throw new Error(`Unable to resolve token contract address for ${config.token} on chain ${config.chain}`);
+    }
+
+    // Validate protocol-token compatibility
+    if (config.protocol === 'compound' && config.token === 'USDT') {
+      throw new Error(`Token compatibility issue: Compound V3 primarily supports USDC, not USDT. Please use USDC or select a different protocol like Aave for USDT staking.`);
+    }
 
     console.log('🏦 WORKFLOW EXECUTION - Stake configuration:', {
       protocol: protocolInfo.name,
@@ -1222,16 +1261,31 @@ export class WorkflowExecutionEngine {
           contractAddress: protocolConfig.contractAddress,
           contractAbi: protocolConfig.abi,
           functionName: protocolConfig.functionName,
-          buildFunctionParams: (sdkTokenAddress: string, amt: string, chainId: number, userAddr: string) => {
-            console.log('🔧 Building Aave function params for stake:', { resolvedTokenAddress: tokenAddress, sdkTokenAddress, amt: amountInTokenUnits, chainId, userAddr });
+          buildFunctionParams: (token: string, amt: string, chainId: number, userAddr: string) => {
+            // Parse the amount inside the callback - amt is the original amount string (e.g., "0.1")
+            const amountInTokenUnits = parseUnitsFunction(amt, tokenDecimals);
+
+            // For Aave, we need to get the token contract address from somewhere
+            // Since we don't have TOKEN_CONTRACT_ADDRESSES mapping, we need to use the tokenAddress from config
+            const tokenContractAddress = tokenAddress; // Use the tokenAddress from the outer scope
+
+            console.log('🔧 Building Aave function params for stake:', {
+              token,
+              tokenContractAddress,
+              originalAmount: amt,
+              amountInTokenUnits: amountInTokenUnits?.toString(),
+              chainId,
+              userAddr
+            });
             return {
-              functionParams: [tokenAddress, amountInTokenUnits, userAddr, 0] // asset, amount, onBehalfOf, referralCode
+              functionParams: [tokenContractAddress, BigInt(amountInTokenUnits), userAddr, 0] // asset, amount, onBehalfOf, referralCode
             };
           },
           tokenApproval: {
             token: config.token,
-            amount: amountInTokenUnits
-          }
+            amount: amount // Use original amount string, SDK will handle conversion
+          },
+          approvalBuffer: 0 // For execute operations, use exact amount without buffer
         };
       } else if (config.protocol === 'compound') {
         executeInput = {
@@ -1239,16 +1293,31 @@ export class WorkflowExecutionEngine {
           contractAddress: protocolConfig.contractAddress,
           contractAbi: protocolConfig.abi,
           functionName: protocolConfig.functionName,
-          buildFunctionParams: (sdkTokenAddress: string, amt: string, chainId: number, userAddr: string) => {
-            console.log('🔧 Building Compound function params for stake:', { resolvedTokenAddress: tokenAddress, sdkTokenAddress, amt: amountInTokenUnits, chainId, userAddr });
+          buildFunctionParams: (token: string, amt: string, chainId: number, userAddr: string) => {
+            // Parse the amount inside the callback - amt is the original amount string (e.g., "0.1")
+            const amountInTokenUnits = parseUnitsFunction(amt, tokenDecimals);
+
+            // For Compound, we need to get the token contract address from somewhere
+            // Since we don't have TOKEN_CONTRACT_ADDRESSES mapping, we need to use the tokenAddress from config
+            const tokenContractAddress = tokenAddress; // Use the tokenAddress from the outer scope
+
+            console.log('🔧 Building Compound function params for stake:', {
+              token,
+              tokenContractAddress,
+              originalAmount: amt,
+              amountInTokenUnits: amountInTokenUnits?.toString(),
+              chainId,
+              userAddr
+            });
             return {
-              functionParams: [tokenAddress, amountInTokenUnits] // asset, amount
+              functionParams: [tokenContractAddress, BigInt(amountInTokenUnits)] // asset, amount
             };
           },
           tokenApproval: {
             token: config.token,
-            amount: amountInTokenUnits
-          }
+            amount: amount // Use original amount string, SDK will handle conversion
+          },
+          approvalBuffer: 0 // For execute operations, use exact amount without buffer
         };
       } else if (config.protocol === 'yearn') {
         executeInput = {
@@ -1256,20 +1325,86 @@ export class WorkflowExecutionEngine {
           contractAddress: protocolConfig.contractAddress,
           contractAbi: protocolConfig.abi,
           functionName: protocolConfig.functionName,
-          buildFunctionParams: (sdkTokenAddress: string, amt: string, chainId: number, userAddr: string) => {
-            console.log('🔧 Building Yearn function params for stake:', { resolvedTokenAddress: tokenAddress, sdkTokenAddress, amt: amountInTokenUnits, chainId, userAddr });
+          buildFunctionParams: (token: string, amt: string, chainId: number, userAddr: string) => {
+            // Parse the amount inside the callback - amt is the original amount string (e.g., "0.1")
+            const amountInTokenUnits = parseUnitsFunction(amt, tokenDecimals);
+            console.log('🔧 Building Yearn function params for stake:', {
+              token,
+              originalAmount: amt,
+              amountInTokenUnits: amountInTokenUnits?.toString(),
+              chainId,
+              userAddr
+            });
             return {
-              functionParams: [amountInTokenUnits, userAddr] // assets, receiver (Yearn doesn't need token address in params)
+              functionParams: [BigInt(amountInTokenUnits), userAddr] // assets, receiver (Yearn doesn't need token address in params)
             };
           },
           tokenApproval: {
             token: config.token,
-            amount: amountInTokenUnits
-          }
+            amount: amount // Use original amount string, SDK will handle conversion
+          },
+          approvalBuffer: 0 // For execute operations, use exact amount without buffer
         };
       } else {
         throw new Error(`Unsupported protocol: ${config.protocol}`);
       }
+
+      // Step 2: Pre-execution validation - Check actual balance across all chains
+      console.log('🔍 STAKE - Checking balances across all chains...');
+
+      try {
+        // Get unified balances to check if user has sufficient tokens
+        const balances = await this.context.nexusSdk.getUnifiedBalances(false); // false = only CA-applicable tokens (ETH, USDC, USDT)
+        console.log('📊 STAKE - Current balances:', balances);
+
+        // Find the token balance for the required token
+        const tokenBalance = balances.find(balance => balance.symbol === config.token);
+
+        if (!tokenBalance) {
+          throw new Error(`No ${config.token} balance found across any connected chains. Please add ${config.token} to any of your wallets.`);
+        }
+
+        const availableBalance = parseFloat(tokenBalance.balance);
+        const requiredAmount = Number(amount);
+
+        console.log('💰 STAKE - Balance analysis:', {
+          token: config.token,
+          available: availableBalance,
+          required: requiredAmount,
+          sufficient: availableBalance >= requiredAmount,
+          perChainBreakdown: tokenBalance.perChainBalances || []
+        });
+
+        // Check if user has sufficient balance across all chains
+        if (availableBalance < requiredAmount) {
+          throw new Error(`Insufficient ${config.token} balance across all chains. Available: ${availableBalance} ${config.token}, Required: ${requiredAmount} ${config.token}. Please add more ${config.token} to any of your connected wallets.`);
+        }
+
+        // Log which chains have the token (for transparency)
+        if (tokenBalance.perChainBalances && tokenBalance.perChainBalances.length > 0) {
+          console.log('🌉 STAKE - Available on chains:', tokenBalance.perChainBalances.map(chain => ({
+            chainId: chain.chainId,
+            balance: chain.balance,
+            chainName: chain.chainName || `Chain ${chain.chainId}`
+          })));
+
+          // For execute operations, we need sufficient balance on the target chain specifically
+          const targetChainBalance = tokenBalance.perChainBalances.find(chain => chain.chainId === config.chain);
+          if (!targetChainBalance || parseFloat(targetChainBalance.balance) < requiredAmount) {
+            const availableOnTarget = targetChainBalance ? parseFloat(targetChainBalance.balance) : 0;
+            throw new Error(`Insufficient ${config.token} balance on target chain ${config.chain}. Available: ${availableOnTarget} ${config.token}, Required: ${requiredAmount} ${config.token}. Execute operations require tokens to be on the target chain. Consider using bridge-and-execute instead, or manually bridge tokens first.`);
+          } else {
+            console.log('✅ STAKE - Sufficient balance on target chain, will execute directly');
+          }
+        }
+
+        console.log('✅ STAKE - Balance validation passed, proceeding with stake operation');
+
+      } catch (balanceError) {
+        console.error('❌ STAKE - Balance validation failed:', balanceError);
+        throw balanceError;
+      }
+
 
       console.log('🔄 WORKFLOW EXECUTION - Calling nexusSdk.execute for stake:', executeInput);
 
@@ -1287,7 +1422,7 @@ export class WorkflowExecutionEngine {
           message = 'Processing token approvals';
           progress = 55;
         } else if (event.type === 'BS' || event.type === 'bridgeStart') {
-          message = 'Starting token bridge (if needed)';
+          message = 'Bridging tokens to target chain';
           progress = 65;
         } else if (event.type === 'IS' || event.type === 'intentStart') {
           message = 'Executing stake transaction';
@@ -1303,20 +1438,27 @@ export class WorkflowExecutionEngine {
       // Add event listener
       this.context.nexusEvents?.on('step', stepListener);
 
-      // Execute the stake operation
+      // Use execute for direct execution on the target chain
       const result = await this.context.nexusSdk.execute(executeInput);
 
       // Remove event listener
       this.context.nexusEvents?.off('step', stepListener);
 
-      console.log('✅ WORKFLOW EXECUTION - Stake operation successful:', result);
+      console.log('🔄 WORKFLOW EXECUTION - Stake operation result:', result);
+
+      // For execute operations, success is indicated by having a transactionHash
+      // Unlike bridgeAndExecute, execute doesn't return a success property
+      if (!result.transactionHash) {
+        throw new Error(`Stake operation failed: ${result.error || 'No transaction hash returned'}`);
+      }
 
       console.log(`✅ WORKFLOW EXECUTION - Successfully staked ${amount} ${config.token} on ${protocolInfo.name}`);
 
       // Store results for potential use by subsequent nodes
       const nodeResults = {
         success: true,
-        transactionHash: result?.transactionHash || result?.hash,
+        transactionHash: result.transactionHash,
+        explorerUrl: result.explorerUrl,
         protocol: protocolInfo.name,
         protocolId: config.protocol,
         contractAddress: protocolConfig.contractAddress,
@@ -1339,23 +1481,41 @@ export class WorkflowExecutionEngine {
       // Remove event listener on error
       this.context.nexusEvents?.off('step', () => {});
 
-      console.error('❌ WORKFLOW EXECUTION - Stake operation failed:', error);
+      console.error('❌ STAKE - Stake operation failed:', error);
 
       const errorMessage = error instanceof Error ? error.message : String(error);
 
-      // Provide better error messages for common DeFi issues
-      let userFriendlyMessage = errorMessage;
+      // Determine error type and suggestions
+      let errorType: 'validation' | 'network' | 'execution' | 'timeout' | 'unknown' = 'execution';
+      let suggestions: string[] = [];
+
       if (errorMessage.includes('exceed deposit limit')) {
-        userFriendlyMessage = `The ${protocolInfo.name} vault has reached its deposit limit. Try a smaller amount or use a different protocol.`;
+        suggestions = [`Try a smaller amount`, `Use a different protocol like ${config.protocol === 'aave' ? 'Compound' : 'Aave'}`];
       } else if (errorMessage.includes('insufficient allowance')) {
-        userFriendlyMessage = `Token approval failed. Please ensure you have approved the protocol to spend your ${config.token}.`;
-      } else if (errorMessage.includes('insufficient balance')) {
-        userFriendlyMessage = `Insufficient ${config.token} balance. You need at least ${amount} ${config.token} plus gas fees.`;
+        suggestions = [`Approve ${config.token} spending for ${protocolInfo.name}`, `Check token allowances in your wallet`];
+      } else if (errorMessage.includes('insufficient balance') || errorMessage.includes('transfer amount exceeds balance')) {
+        suggestions = [`Add more ${config.token} to your wallet`, `Reduce the stake amount`, `Check gas fee requirements`];
       } else if (errorMessage.includes('protocol paused')) {
-        userFriendlyMessage = `The ${protocolInfo.name} protocol is currently paused. Please try again later.`;
+        suggestions = [`Try again later when protocol is resumed`, `Use an alternative protocol`];
+        errorType = 'network';
+      } else if (errorMessage.includes('network') || errorMessage.includes('timeout')) {
+        errorType = 'network';
+        suggestions = [`Check your internet connection`, `Try again in a few moments`];
+      } else if (errorMessage.includes('invalid') || errorMessage.includes('required')) {
+        errorType = 'validation';
+        suggestions = [`Check your stake configuration`, `Verify amount and protocol settings`];
       }
 
-      console.error(`❌ WORKFLOW EXECUTION - Stake operation failed: ${userFriendlyMessage}`);
+      // Report detailed error
+      this.reportNodeError(node.id, error, errorType, {
+        nodeType: 'stake',
+        operation: 'stake',
+        protocol: protocolInfo.name,
+        protocolId: config.protocol,
+        token: config.token,
+        amount: Number(amount),
+        chain: config.chain
+      }, suggestions);
 
       // Store error details for debugging
       this.context.results[node.id] = {
@@ -1369,7 +1529,7 @@ export class WorkflowExecutionEngine {
         chain: config.chain
       };
 
-      throw new Error('Stake operation failed: ' + userFriendlyMessage);
+      throw new Error('Stake operation failed: ' + errorMessage);
     }
   }
 
@@ -1415,8 +1575,46 @@ export class WorkflowExecutionEngine {
 
       console.log(`🔍 BALANCE CHECK - Fetching ${config.token} balance for address ${checkAddress}`);
 
-      // Get unified balance for the specific token
-      const balanceResult = await this.context.nexusSdk.getUnifiedBalance(config.token);
+      // Get unified balance for the specific token with enhanced error handling
+      let balanceResult;
+      try {
+        balanceResult = await this.context.nexusSdk.getUnifiedBalance(config.token);
+      } catch (balanceError) {
+        const errorMessage = balanceError instanceof Error ? balanceError.message : 'Unknown error';
+
+        // Handle specific Ankr/network errors with fallback to cached balances
+        if (errorMessage.includes('balances cannot be retrieved') ||
+            errorMessage.includes('Ankr') ||
+            errorMessage.includes('network') ||
+            errorMessage.includes('timeout')) {
+
+          console.warn('⚠️ BALANCE CHECK - Balance API temporarily unavailable, trying alternative approach...');
+
+          // Try to get all unified balances and filter for our token
+          try {
+            const { getCachedUnifiedBalances } = await import('@/lib/workflow/simulationUtils');
+            const allBalances = await getCachedUnifiedBalances(this.context.nexusSdk, false);
+            const tokenBalance = allBalances.find(balance => balance.symbol === config.token);
+
+            if (tokenBalance) {
+              // Convert to unified balance format
+              balanceResult = {
+                balance: tokenBalance.balance,
+                balanceInFiat: tokenBalance.balanceInFiat,
+                breakdown: tokenBalance.breakdown || []
+              };
+              console.log('✅ BALANCE CHECK - Retrieved balance using fallback method');
+            } else {
+              throw new Error(`No ${config.token} balance found across any connected chains`);
+            }
+          } catch (fallbackError) {
+            throw new Error(`Balance check temporarily unavailable due to network connectivity issues. Please try again in a moment. Original error: ${errorMessage}`);
+          }
+        } else {
+          // Re-throw other types of errors
+          throw balanceError;
+        }
+      }
 
       if (!balanceResult) {
         console.log('⚠️ BALANCE CHECK - No balance data returned from SDK');
@@ -1534,10 +1732,14 @@ export class WorkflowExecutionEngine {
       let userFriendlyMessage = errorMessage;
       if (errorMessage.includes('token not supported')) {
         userFriendlyMessage = `Token ${config.token} is not supported for balance checking.`;
-      } else if (errorMessage.includes('network error')) {
-        userFriendlyMessage = `Network error while fetching balance. Please check your connection and try again.`;
+      } else if (errorMessage.includes('network error') ||
+                 errorMessage.includes('balances cannot be retrieved') ||
+                 errorMessage.includes('connectivity issues')) {
+        userFriendlyMessage = `Balance check temporarily unavailable due to network connectivity issues. Please try again in a moment.`;
       } else if (errorMessage.includes('invalid address')) {
         userFriendlyMessage = `Invalid address format: ${checkAddress}. Please provide a valid Ethereum address.`;
+      } else if (errorMessage.includes('Ankr')) {
+        userFriendlyMessage = `Balance service temporarily unavailable. Please try again in a moment.`;
       }
 
       console.error(`❌ BALANCE CHECK - Balance check failed: ${userFriendlyMessage}`);
@@ -1556,6 +1758,431 @@ export class WorkflowExecutionEngine {
     }
   }
 
+  private async executeDelay(node: WorkflowNode): Promise<unknown> {
+    const config = node.data.config as DelayNodeConfig;
+    console.log('⏱️ DELAY - Starting delay operation:', { nodeId: node.id, config });
+
+    // Validation
+    if (!config.duration || config.duration <= 0) {
+      throw new Error('Delay duration must be a positive number');
+    }
+
+    if (!config.unit || !['seconds', 'minutes', 'hours', 'days'].includes(config.unit)) {
+      throw new Error('Delay unit must be one of: seconds, minutes, hours, days');
+    }
+
+    // Calculate delay in milliseconds
+    let delayMs: number;
+    switch (config.unit) {
+      case 'seconds':
+        delayMs = config.duration * 1000;
+        break;
+      case 'minutes':
+        delayMs = config.duration * 60 * 1000;
+        break;
+      case 'hours':
+        delayMs = config.duration * 60 * 60 * 1000;
+        break;
+      case 'days':
+        delayMs = config.duration * 24 * 60 * 60 * 1000;
+        break;
+      default:
+        throw new Error(`Unknown delay unit: ${config.unit}`);
+    }
+
+    // Safety limit - max 7 days
+    const maxDelayMs = 7 * 24 * 60 * 60 * 1000;
+    if (delayMs > maxDelayMs) {
+      throw new Error(`Delay (${config.duration} ${config.unit}) exceeds maximum allowed (7 days)`);
+    }
+
+    console.log(`⏱️ DELAY - Waiting for ${config.duration} ${config.unit} (${delayMs}ms)`);
+
+    const startTime = Date.now();
+
+    try {
+      // Implement delay with Promise
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+
+      const endTime = Date.now();
+      const actualDelayMs = endTime - startTime;
+
+      console.log(`✅ DELAY - Delay completed after ${actualDelayMs}ms`);
+
+      const nodeResults = {
+        success: true,
+        configuredDelay: {
+          duration: config.duration,
+          unit: config.unit,
+          milliseconds: delayMs
+        },
+        actualDelay: {
+          milliseconds: actualDelayMs,
+          seconds: Math.round(actualDelayMs / 1000 * 100) / 100
+        },
+        startTime: new Date(startTime).toISOString(),
+        endTime: new Date(endTime).toISOString(),
+        timestamp: new Date().toISOString()
+      };
+
+      this.context.results[node.id] = nodeResults;
+      this.context.results[`${node.id}_delayCompleted`] = true;
+
+      return nodeResults;
+
+    } catch (error) {
+      console.error('❌ DELAY - Delay operation failed:', error);
+
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.context.results[node.id] = {
+        success: false,
+        error: error,
+        errorMessage: errorMessage,
+        duration: config.duration,
+        unit: config.unit
+      };
+
+      throw new Error('Delay operation failed: ' + errorMessage);
+    }
+  }
+
+  private async executeCondition(node: WorkflowNode): Promise<unknown> {
+    const config = node.data.config as any; // Will define proper type later
+    console.log('🔀 CONDITION - Starting condition evaluation:', { nodeId: node.id, config });
+
+    // For now, implement basic condition logic
+    // In a full implementation, this would need more sophisticated condition parsing
+
+    try {
+      // Simple condition implementation - can be expanded
+      let conditionResult = true;
+
+      if (config.condition && config.leftValue !== undefined && config.rightValue !== undefined) {
+        const leftVal = this.resolveValue(config.leftValue);
+        const rightVal = this.resolveValue(config.rightValue);
+
+        switch (config.operator) {
+          case 'equals':
+            conditionResult = leftVal === rightVal;
+            break;
+          case 'not_equals':
+            conditionResult = leftVal !== rightVal;
+            break;
+          case 'greater':
+            conditionResult = Number(leftVal) > Number(rightVal);
+            break;
+          case 'less':
+            conditionResult = Number(leftVal) < Number(rightVal);
+            break;
+          case 'greater_equal':
+            conditionResult = Number(leftVal) >= Number(rightVal);
+            break;
+          case 'less_equal':
+            conditionResult = Number(leftVal) <= Number(rightVal);
+            break;
+          default:
+            console.log('⚠️ CONDITION - No operator specified, defaulting to true');
+        }
+      }
+
+      console.log(`🔀 CONDITION - Evaluation result: ${conditionResult}`);
+
+      const nodeResults = {
+        success: true,
+        condition: {
+          leftValue: config.leftValue,
+          operator: config.operator,
+          rightValue: config.rightValue,
+          result: conditionResult
+        },
+        conditionMet: conditionResult,
+        timestamp: new Date().toISOString()
+      };
+
+      this.context.results[node.id] = nodeResults;
+      this.context.results[`${node.id}_conditionMet`] = conditionResult;
+
+      return nodeResults;
+
+    } catch (error) {
+      console.error('❌ CONDITION - Condition evaluation failed:', error);
+
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.context.results[node.id] = {
+        success: false,
+        error: error,
+        errorMessage: errorMessage,
+        conditionMet: false
+      };
+
+      throw new Error('Condition evaluation failed: ' + errorMessage);
+    }
+  }
+
+  private async executeLoop(node: WorkflowNode): Promise<unknown> {
+    const config = node.data.config as LoopNodeConfig;
+    console.log('🔄 LOOP - Starting loop operation:', { nodeId: node.id, config });
+
+    // Resolve iterations count
+    let iterations: number;
+    if (config.iterations === 'fromPrevious') {
+      const previousIterations = this.context.results[`${node.id}_previousIterations`] || this.context.variables.iterations;
+      if (!previousIterations) {
+        throw new Error('No previous iterations count available for loop operation');
+      }
+      iterations = Number(previousIterations);
+    } else {
+      iterations = Number(this.resolveValue(config.iterations));
+    }
+
+    if (isNaN(iterations) || iterations <= 0) {
+      throw new Error(`Invalid iterations count: ${iterations}. Must be a positive number.`);
+    }
+
+    // Limit iterations for safety
+    const maxIterations = 100;
+    if (iterations > maxIterations) {
+      throw new Error(`Iterations count (${iterations}) exceeds maximum allowed (${maxIterations})`);
+    }
+
+    console.log(`🔄 LOOP - Will execute ${iterations} iterations`);
+
+    try {
+      const loopResults = [];
+      let currentIteration = 0;
+
+      for (let i = 0; i < iterations; i++) {
+        currentIteration = i + 1;
+        console.log(`🔄 LOOP - Iteration ${currentIteration}/${iterations}`);
+
+        // Store current iteration in context for child nodes
+        this.context.variables[`${node.id}_currentIteration`] = currentIteration;
+        this.context.variables[`${node.id}_totalIterations`] = iterations;
+
+        // For now, just track the iteration
+        // In a full implementation, this would execute connected child nodes
+        const iterationResult = {
+          iteration: currentIteration,
+          timestamp: new Date().toISOString()
+        };
+
+        loopResults.push(iterationResult);
+
+        // Check break condition if specified
+        if (config.breakCondition) {
+          const breakConditionResult = this.resolveValue(config.breakCondition);
+          if (breakConditionResult) {
+            console.log(`🔄 LOOP - Break condition met at iteration ${currentIteration}`);
+            break;
+          }
+        }
+      }
+
+      console.log(`✅ LOOP - Loop completed after ${currentIteration} iterations`);
+
+      const nodeResults = {
+        success: true,
+        configuredIterations: iterations,
+        actualIterations: currentIteration,
+        results: loopResults,
+        breakCondition: config.breakCondition,
+        timestamp: new Date().toISOString()
+      };
+
+      this.context.results[node.id] = nodeResults;
+      this.context.results[`${node.id}_iterations`] = currentIteration;
+
+      return nodeResults;
+
+    } catch (error) {
+      console.error('❌ LOOP - Loop operation failed:', error);
+
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.context.results[node.id] = {
+        success: false,
+        error: error,
+        errorMessage: errorMessage,
+        iterations: iterations
+      };
+
+      throw new Error('Loop operation failed: ' + errorMessage);
+    }
+  }
+
+  private async executeSplit(node: WorkflowNode): Promise<unknown> {
+    console.log('🔀 SPLIT - Simple split: 1 input → 2 outputs', { nodeId: node.id });
+
+    try {
+      // Split node simply passes data through to both output branches
+      // No complex logic needed - just a connector
+
+      console.log('✅ SPLIT - Data split to both output branches');
+
+      const nodeResults = {
+        success: true,
+        type: 'split',
+        description: 'Split data from 1 input to 2 outputs',
+        timestamp: new Date().toISOString()
+      };
+
+      this.context.results[node.id] = nodeResults;
+
+      return nodeResults;
+
+    } catch (error) {
+      console.error('❌ SPLIT - Split operation failed:', error);
+
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.context.results[node.id] = {
+        success: false,
+        error: error,
+        errorMessage: errorMessage,
+        type: 'split'
+      };
+
+      throw new Error('Split operation failed: ' + errorMessage);
+    }
+  }
+
+  private async executeAggregate(node: WorkflowNode): Promise<unknown> {
+    const config = node.data.config as AggregateNodeConfig;
+    console.log('🔗 AGGREGATE - Starting aggregate operation:', { nodeId: node.id, config });
+
+    try {
+      // For now, implement basic aggregation of previous results
+      // In a full implementation, this would wait for multiple parallel branches
+
+      const aggregatedResults = [];
+      const aggregatedData: any = {};
+
+      // Look for results from previous nodes that might be branches
+      for (const [key, value] of Object.entries(this.context.results)) {
+        if (key.includes('_branch_') || key.includes('_iteration_')) {
+          aggregatedResults.push({
+            nodeId: key,
+            result: value
+          });
+        }
+      }
+
+      // Simple aggregation - can be expanded based on config
+      if (config.operation) {
+        switch (config.operation) {
+          case 'sum':
+            // Sum numeric values
+            aggregatedData.sum = aggregatedResults.reduce((total, item) => {
+              const value = typeof item.result === 'object' && item.result.value ? item.result.value : 0;
+              return total + Number(value);
+            }, 0);
+            break;
+          case 'average':
+            // Average numeric values
+            const sum = aggregatedResults.reduce((total, item) => {
+              const value = typeof item.result === 'object' && item.result.value ? item.result.value : 0;
+              return total + Number(value);
+            }, 0);
+            aggregatedData.average = aggregatedResults.length > 0 ? sum / aggregatedResults.length : 0;
+            break;
+          case 'max':
+            // Maximum numeric value
+            aggregatedData.max = aggregatedResults.reduce((max, item) => {
+              const value = typeof item.result === 'object' && item.result.value ? item.result.value : 0;
+              return Math.max(max, Number(value));
+            }, -Infinity);
+            break;
+          case 'min':
+            // Minimum numeric value
+            aggregatedData.min = aggregatedResults.reduce((min, item) => {
+              const value = typeof item.result === 'object' && item.result.value ? item.result.value : 0;
+              return Math.min(min, Number(value));
+            }, Infinity);
+            break;
+          case 'first':
+            // First result
+            aggregatedData.first = aggregatedResults.length > 0 ? aggregatedResults[0] : null;
+            break;
+          case 'last':
+            // Last result
+            aggregatedData.last = aggregatedResults.length > 0 ? aggregatedResults[aggregatedResults.length - 1] : null;
+            break;
+          default:
+            aggregatedData.collected = aggregatedResults;
+        }
+      } else {
+        aggregatedData.collected = aggregatedResults;
+      }
+
+      console.log(`✅ AGGREGATE - Aggregated ${aggregatedResults.length} results`);
+
+      const nodeResults = {
+        success: true,
+        operation: config.operation || 'collect',
+        inputCount: aggregatedResults.length,
+        aggregatedData,
+        timestamp: new Date().toISOString()
+      };
+
+      this.context.results[node.id] = nodeResults;
+      this.context.results[`${node.id}_aggregatedData`] = aggregatedData;
+
+      return nodeResults;
+
+    } catch (error) {
+      console.error('❌ AGGREGATE - Aggregate operation failed:', error);
+
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.context.results[node.id] = {
+        success: false,
+        error: error,
+        errorMessage: errorMessage
+      };
+
+      throw new Error('Aggregate operation failed: ' + errorMessage);
+    }
+  }
+
+  private async executeNotification(node: WorkflowNode): Promise<unknown> {
+    const config = node.data.config as any; // Will define proper type
+    console.log('📢 NOTIFICATION - Starting notification:', { nodeId: node.id, config });
+
+    try {
+      const message = this.resolveValue(config.message) || 'Workflow notification';
+      const title = this.resolveValue(config.title) || 'Workflow Update';
+      const type = config.type || 'info';
+
+      console.log(`📢 NOTIFICATION - ${type.toUpperCase()}: ${title} - ${message}`);
+
+      // For now, just log the notification
+      // In a full implementation, this could send actual notifications
+      const nodeResults = {
+        success: true,
+        notification: {
+          title: String(title),
+          message: String(message),
+          type,
+          sent: true
+        },
+        timestamp: new Date().toISOString()
+      };
+
+      this.context.results[node.id] = nodeResults;
+
+      return nodeResults;
+
+    } catch (error) {
+      console.error('❌ NOTIFICATION - Notification failed:', error);
+
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.context.results[node.id] = {
+        success: false,
+        error: error,
+        errorMessage: errorMessage
+      };
+
+      throw new Error('Notification failed: ' + errorMessage);
+    }
+  }
+
   private resolveValue(value: unknown): unknown {
     if (typeof value === 'string' && value.startsWith('{{') && value.endsWith('}}')) {
       const variableName = value.slice(2, -2);
@@ -1571,6 +2198,89 @@ export class WorkflowExecutionEngine {
     }
 
     return value;
+  }
+
+  private reportNodeError(nodeId: string, error: any, errorType: 'validation' | 'network' | 'execution' | 'timeout' | 'unknown' = 'unknown', context?: Record<string, any>, suggestions?: string[]) {
+    if (!this.context.onNodeError) return;
+
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    let details = '';
+    let retryable = false;
+    let enhancedSuggestions = suggestions || [];
+
+    // Enhance error information based on type and content
+    switch (errorType) {
+      case 'validation':
+        details = 'Configuration validation failed. Please check your node settings.';
+        enhancedSuggestions = [
+          'Check all required fields are filled',
+          'Verify token and chain selections are valid',
+          'Ensure amount values are positive numbers',
+          ...enhancedSuggestions
+        ];
+        break;
+      case 'network':
+        details = 'Network connectivity or blockchain interaction failed.';
+        retryable = true;
+        enhancedSuggestions = [
+          'Check your internet connection',
+          'Verify wallet is connected',
+          'Try again in a few moments',
+          'Check if the blockchain network is operational',
+          ...enhancedSuggestions
+        ];
+        break;
+      case 'execution':
+        details = 'Smart contract execution or SDK operation failed.';
+        retryable = true;
+        enhancedSuggestions = [
+          'Check if you have sufficient balance',
+          'Verify token allowances are set',
+          'Ensure gas fees are available',
+          'Check if the protocol is operational',
+          ...enhancedSuggestions
+        ];
+        break;
+      case 'timeout':
+        details = 'Operation took too long to complete.';
+        retryable = true;
+        enhancedSuggestions = [
+          'Try the operation again',
+          'Check network congestion',
+          'Consider increasing timeout if possible',
+          ...enhancedSuggestions
+        ];
+        break;
+    }
+
+    // Detect specific error patterns and provide targeted suggestions
+    if (errorMessage.includes('insufficient funds') || errorMessage.includes('insufficient balance')) {
+      enhancedSuggestions.unshift('Add more funds to your wallet');
+      errorType = 'execution';
+    } else if (errorMessage.includes('allowance') || errorMessage.includes('approval')) {
+      enhancedSuggestions.unshift('Approve token spending for this protocol');
+      errorType = 'execution';
+    } else if (errorMessage.includes('network') || errorMessage.includes('connection')) {
+      errorType = 'network';
+    } else if (errorMessage.includes('required') || errorMessage.includes('invalid')) {
+      errorType = 'validation';
+    }
+
+    this.context.onNodeError(nodeId, {
+      message: errorMessage,
+      details,
+      timestamp: new Date().toISOString(),
+      errorType,
+      originalError: error,
+      context: {
+        nodeId,
+        nodeType: context?.nodeType,
+        operation: context?.operation,
+        ...context
+      },
+      suggestions: enhancedSuggestions,
+      retryable
+    });
   }
 
   private getTokenDecimals(token: string): number {

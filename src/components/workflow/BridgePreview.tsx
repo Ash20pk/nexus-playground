@@ -6,6 +6,12 @@ import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ArrowRight, Loader2, CheckCircle, AlertCircle, ArrowUpDown, Coins } from 'lucide-react';
 import { useNexus } from '@/provider/NexusProvider';
+import {
+  handleSimulationResult,
+  checkDirectOperationBalance,
+  estimateDirectOperationGas,
+  type SimulationResult
+} from '@/lib/workflow/simulationUtils';
 
 interface BridgePreviewProps {
   token: string;
@@ -53,7 +59,7 @@ export const BridgePreview: React.FC<BridgePreviewProps> = ({
 }) => {
   const { nexusSdk, isInitialized } = useNexus();
   const [isSimulating, setIsSimulating] = useState(false);
-  const [simulationResult, setSimulationResult] = useState<BridgeSimulationResult | null>(null);
+  const [simulationResult, setSimulationResult] = useState<SimulationResult | null>(null);
   const [simulationError, setSimulationError] = useState<string | null>(null);
 
   const isValidForSimulation = () => {
@@ -79,7 +85,7 @@ export const BridgePreview: React.FC<BridgePreviewProps> = ({
     const numericAmount = Number(amount);
 
     try {
-      console.log('🔍 BRIDGE PREVIEW - Simulating bridge:', {
+      console.log('🔍 BRIDGE PREVIEW - Starting simulation:', {
         token,
         amount: numericAmount,
         fromChain,
@@ -94,49 +100,42 @@ export const BridgePreview: React.FC<BridgePreviewProps> = ({
         sourceChains: sourceChains
       };
 
-      const simulationResult = await nexusSdk.simulateBridge(bridgeParams);
+      // Use unified simulation handler
+      const result = await handleSimulationResult(
+        () => nexusSdk.simulateBridge(bridgeParams),
+        'bridge',
+        estimateDirectOperationGas('bridge', toChain)
+      );
 
-      if (simulationResult) {
-        console.log('✅ BRIDGE PREVIEW - Simulation successful:', simulationResult);
-        setSimulationResult(simulationResult);
-        onSimulate?.(simulationResult);
-      } else {
-        // Create a mock result if simulation returns null
-        const mockResult: BridgeSimulationResult = {
-          intent: {
-            sources: [{
-              amount: numericAmount.toString(),
-              chainID: fromChain,
-              tokenAddress: '0x0000000000000000000000000000000000000000',
-              decimals: token === 'ETH' ? 18 : 6,
-              symbol: token
-            }],
-            destination: {
-              amount: (numericAmount * 0.995).toString(), // Assume ~0.5% bridge fees
-              chainID: toChain,
-              tokenAddress: '0x0000000000000000000000000000000000000000',
-              decimals: token === 'ETH' ? 18 : 6,
-              symbol: token
-            },
-            fees: {
-              protocol: '0.1',
-              solver: '0.05',
-              gasSupplied: '2.5',
-              caGas: '0.3',
-              total: '2.95'
-            },
-            isAvailableBalanceInsufficient: false
-          }
-        };
-
-        setSimulationResult(mockResult);
-        onSimulate?.(mockResult);
+      if (result.type === 'ERROR') {
+        setSimulationError(result.error || 'Bridge simulation failed');
+        return;
       }
 
+      // For bridge operations, there's typically no "direct" mode
+      // If SDK returns null, it means no bridge route is available
+      if (result.type === 'DIRECT_OPERATION') {
+        setSimulationError('No bridge route available for this token/chain combination');
+        return;
+      }
+
+      // Check balance for CA route if needed
+      if (result.type === 'CA_ROUTE' && !result.isInsufficientBalance) {
+        const balanceCheck = await checkDirectOperationBalance(nexusSdk, token, numericAmount);
+        if (!balanceCheck.sufficient) {
+          // Update the simulation result to reflect insufficient balance
+          result.isInsufficientBalance = true;
+          result.simulation.intent.isAvailableBalanceInsufficient = true;
+        }
+      }
+
+      console.log('✅ BRIDGE PREVIEW - Simulation completed:', result);
+      setSimulationResult(result);
+      onSimulate?.(result.simulation);
+
     } catch (error) {
-      let errorMessage = error instanceof Error ? error.message : 'Bridge simulation failed';
       console.error('❌ BRIDGE PREVIEW - Simulation error:', error);
-      setSimulationError(errorMessage);
+      setSimulationError(error instanceof Error ? error.message : 'Bridge simulation failed');
     } finally {
       setIsSimulating(false);
     }
@@ -212,7 +211,7 @@ export const BridgePreview: React.FC<BridgePreviewProps> = ({
                   Calculating...
                 </div>
               ) : simulationResult ? (
-                `~${parseFloat(simulationResult.intent.destination.amount).toFixed(6)} ${token}`
+                `~${parseFloat(simulationResult.simulation?.intent?.destination?.amount || '0').toFixed(6)} ${token}`
               ) : (
                 `? ${token}`
               )}
@@ -238,9 +237,9 @@ export const BridgePreview: React.FC<BridgePreviewProps> = ({
           </Alert>
         )}
 
-        {simulationResult && (
+        {simulationResult && simulationResult.simulation && (
           <div className="space-y-3">
-            {simulationResult.intent.isAvailableBalanceInsufficient ? (
+            {simulationResult.isInsufficientBalance ? (
               <Alert variant="destructive">
                 <AlertCircle className="h-4 w-4" />
                 <AlertDescription>
@@ -258,10 +257,10 @@ export const BridgePreview: React.FC<BridgePreviewProps> = ({
                     <div><strong>Bridge Route Ready</strong></div>
                     <div className="text-sm space-y-1">
                       <div>You'll receive: <code className="bg-muted px-1 rounded text-xs">
-                        {parseFloat(simulationResult.intent.destination.amount).toFixed(6)} {token}
+                        {parseFloat(simulationResult.simulation?.intent?.destination?.amount || '0').toFixed(6)} {token}
                       </code></div>
                       <div>Total fees: <code className="bg-muted px-1 rounded text-xs">
-                        {simulationResult.intent.fees.total} {token}
+                        {simulationResult.simulation?.intent?.fees?.total || '0'} {token}
                       </code></div>
                     </div>
                   </div>
@@ -276,7 +275,7 @@ export const BridgePreview: React.FC<BridgePreviewProps> = ({
                 <div className="flex items-center justify-between text-sm">
                   <span>Source Chains:</span>
                   <div className="flex gap-1">
-                    {simulationResult.intent.sources.map((source, index) => (
+                    {simulationResult.simulation?.intent?.sources?.map((source: any, index: number) => (
                       <Badge key={index} variant="outline">
                         Chain {source.chainID}
                       </Badge>
@@ -285,7 +284,7 @@ export const BridgePreview: React.FC<BridgePreviewProps> = ({
                 </div>
                 <div className="flex items-center justify-between text-sm">
                   <span>Destination Chain:</span>
-                  <Badge variant="outline">Chain {simulationResult.intent.destination.chainID}</Badge>
+                  <Badge variant="outline">Chain {simulationResult.simulation?.intent?.destination?.chainID || toChain}</Badge>
                 </div>
                 {sourceChains && sourceChains.length > 0 && (
                   <div className="flex items-center justify-between text-sm">
@@ -308,19 +307,19 @@ export const BridgePreview: React.FC<BridgePreviewProps> = ({
               <div className="text-xs space-y-1">
                 <div className="flex justify-between">
                   <span>Protocol fee:</span>
-                  <span>{simulationResult.intent.fees.protocol} {token}</span>
+                  <span>{simulationResult.simulation?.intent?.fees?.protocol || '0'} {token}</span>
                 </div>
                 <div className="flex justify-between">
                   <span>Solver fee:</span>
-                  <span>{simulationResult.intent.fees.solver} {token}</span>
+                  <span>{simulationResult.simulation?.intent?.fees?.solver || '0'} {token}</span>
                 </div>
                 <div className="flex justify-between">
                   <span>Gas costs:</span>
-                  <span>{simulationResult.intent.fees.gasSupplied} {token}</span>
+                  <span>{simulationResult.simulation?.intent?.fees?.gasSupplied || '0'} {token}</span>
                 </div>
                 <div className="flex justify-between font-medium border-t pt-1">
                   <span>Total fees:</span>
-                  <span>{simulationResult.intent.fees.total} {token}</span>
+                  <span>{simulationResult.simulation?.intent?.fees?.total || '0'} {token}</span>
                 </div>
               </div>
             </div>

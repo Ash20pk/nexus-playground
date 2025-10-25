@@ -8,6 +8,13 @@ import { Loader2, AlertCircle, CheckCircle, Clock, ArrowRight, Wallet, Info } fr
 import { useNexus } from '@/provider/NexusProvider';
 import { useAccount } from 'wagmi';
 import { SUPPORTED_CHAINS_IDS, SUPPORTED_TOKENS } from '@/types/workflow';
+import {
+  handleSimulationResult,
+  checkDirectOperationBalance,
+  estimateDirectOperationGas,
+  getCachedUnifiedBalances,
+  type SimulationResult
+} from '@/lib/workflow/simulationUtils';
 
 interface TransferPreviewProps {
   token: SUPPORTED_TOKENS;
@@ -76,9 +83,10 @@ export const TransferPreview: React.FC<TransferPreviewProps> = ({
   };
 
   // Helper to determine if transfer is direct or chain abstraction
-  const isDirect = simulationResult ? parseFloat(simulationResult.intent.fees.caGas) === 0 : false;
+  const isDirect = simulationResult?.directOperationMode ||
+    (simulationResult?.fees?.caGas ? parseFloat(simulationResult.fees.caGas) === 0 : false);
 
-  // Load user balance for the specified token and ETH for gas
+  // Load user balance for the specified token and ETH for gas using cached approach
   const loadUserBalance = async () => {
     if (!nexusSdk || !isInitialized || !token) {
       return;
@@ -86,7 +94,7 @@ export const TransferPreview: React.FC<TransferPreviewProps> = ({
 
     setIsLoadingBalance(true);
     try {
-      // Load primary token balance
+      // Load primary token balance using cached unified balances
       const balance = await nexusSdk.getUnifiedBalance(token);
       setUserBalance(balance);
       console.log('💰 User balance loaded:', balance);
@@ -122,130 +130,79 @@ export const TransferPreview: React.FC<TransferPreviewProps> = ({
     const numericAmount = Number(amount);
 
     try {
-      const result = await nexusSdk.simulateTransfer({
+      console.log('🔍 TRANSFER PREVIEW - Starting simulation:', {
         token,
         amount: numericAmount,
         chainId,
-        recipient: recipient as `0x${string}`,
+        recipient,
         sourceChains
       });
 
-      setSimulationResult(result);
-      onSimulate?.(result);
-    } catch (error) {
-      let errorMessage = error instanceof Error ? error.message : 'Simulation failed';
+      // Use unified simulation handler
+      const result = await handleSimulationResult(
+        () => nexusSdk.simulateTransfer({
+          token,
+          amount: numericAmount,
+          chainId,
+          recipient: recipient as `0x${string}`,
+          sourceChains
+        }),
+        'transfer',
+        estimateDirectOperationGas('transfer', chainId)
+      );
 
-      // Handle "ca not applicable" according to SDK documentation
-      if (errorMessage === 'ca not applicable') {
-        console.log('⚡ TRANSFER PREVIEW - "ca not applicable" means direct transfer will be used');
-        // This is actually success - create a mock simulation result for direct transfer
-        const mockDirectTransferResult = {
+      if (result.type === 'ERROR') {
+        setSimulationError(result.error || 'Transfer simulation failed');
+        return;
+      }
+
+      // For direct operations, create a proper simulation structure
+      if (result.type === 'DIRECT_OPERATION') {
+        // Check balance for direct transfer
+        const balanceCheck = await checkDirectOperationBalance(nexusSdk, token, numericAmount, chainId);
+        if (!balanceCheck.sufficient) {
+          setSimulationError(balanceCheck.error || `Insufficient ${token} balance`);
+          return;
+        }
+
+        // Create direct transfer result
+        result.simulation = {
           intent: {
-            fees: {
+            fees: result.fees || {
               caGas: '0', // Indicates direct transfer
-              gasSupplied: '0.01', // Estimated gas cost
-              total: '0'
+              gasSupplied: '0.01',
+              total: '0.01'
             },
             sources: [],
             destination: {
               amount: numericAmount.toString(),
               chainID: chainId
-            },
-            isAvailableBalanceInsufficient: false
+            }
           },
           token: { symbol: token }
         };
-        setSimulationResult(mockDirectTransferResult as any);
-        onSimulate?.(mockDirectTransferResult as any);
-        return;
+        result.directOperationMode = true;
+        result.isInsufficientBalance = false; // Already checked above
       }
 
-      // Enhanced error messaging for common issues
-      if (errorMessage.includes('Insufficient balance')) {
-        const totalBalance = userBalance ? parseFloat(userBalance.balance) : 0;
-        const requestedAmount = parseFloat(amount.toString());
-
-        if (totalBalance >= requestedAmount) {
-          // User has sufficient token balance, issue is likely gas or chain-specific
-          const destinationEthBalance = ethBalance?.breakdown?.find((b: any) => b.chain?.id === chainId);
-          const hasGasOnDestination = destinationEthBalance && parseFloat(destinationEthBalance.balance || '0') > 0.001;
-
-          // Get chain name for user-friendly display
-          const getChainName = (id: number) => {
-            const chainNames: { [key: number]: string } = {
-              1: 'Ethereum',
-              10: 'Optimism',
-              137: 'Polygon',
-              42161: 'Arbitrum',
-              43114: 'Avalanche',
-              8453: 'Base',
-              534352: 'Scroll',
-              56: 'BNB Chain'
-            };
-            return chainNames[id] || `Chain ${id}`;
-          };
-
-          if (!hasGasOnDestination) {
-            // Clear, simple error for missing gas
-            errorMessage = `🚫 Missing Gas Token
-
-You have enough ${token} but need ETH to pay for gas fees on ${getChainName(chainId)}.
-
-💡 Quick Fix:
-• Get some ETH on ${getChainName(chainId)}
-• You only need ~$5-10 worth of ETH for gas
-• Bridge ETH from another chain or buy directly
-
-Once you have ETH on ${getChainName(chainId)}, this transfer will work perfectly!`;
-          } else {
-            // Other distribution issues
-            errorMessage = `⚠️ Balance Distribution Issue
-
-You have enough ${token} (${userBalance?.balance || 'unknown'} total) but the transfer cannot be optimized.
-
-This could be due to:
-• Token balance spread across chains in a way that's not optimal for routing
-• Network connectivity issues
-• Temporary SDK issues
-
-💡 Try:
-• Wait a moment and try again
-• Try a smaller amount first
-• Check your balance breakdown below`;
+      // Additional balance check for CA route
+      if (result.type === 'CA_ROUTE' && !result.isInsufficientBalance) {
+        const balanceCheck = await checkDirectOperationBalance(nexusSdk, token, numericAmount);
+        if (!balanceCheck.sufficient) {
+          result.isInsufficientBalance = true;
+          if (result.simulation) {
+            result.simulation.intent.isAvailableBalanceInsufficient = true;
           }
-        } else {
-          errorMessage = `💸 Not Enough ${token} -> You need ${amount} ${token} but only have ${userBalance?.balance || '0'} ${token} total.
-
-💡 Get more ${token}:
-  • Buy ${token} on an exchange
-  • Bridge ${token} from another wallet
-  • Use a different token or amount`;
         }
-      } else if (errorMessage.includes('internal error')) {
-        errorMessage = `🔄 Temporary Issue
-
-The simulation couldn't complete due to network or system issues.
-
-💡 Please:
-• Wait 10-30 seconds and try again
-• Check your internet connection
-• Try refreshing the page if it persists`;
       }
 
-      setSimulationError(errorMessage);
-      console.error('🔍 DETAILED Transfer simulation error:', {
-        originalError: error,
-        errorMessage: error instanceof Error ? error.message : 'Unknown error',
-        walletAddress,
-        userBalance: userBalance,
-        requestedAmount: amount,
-        requestedAmountNum: Number(amount),
-        token,
-        chainId,
-        sourceChains,
-        hasBalance: userBalance ? parseFloat(userBalance.balance) >= Number(amount) : false,
-        balanceBreakdown: userBalance?.breakdown || 'No breakdown available'
-      });
+      console.log('✅ TRANSFER PREVIEW - Simulation completed:', result);
+      setSimulationResult(result);
+      onSimulate?.(result.simulation);
+
+    } catch (error) {
+      console.error('❌ TRANSFER PREVIEW - Simulation error:', error);
+      setSimulationError(error instanceof Error ? error.message : 'Transfer simulation failed');
     } finally {
       setIsSimulating(false);
     }
@@ -395,7 +352,7 @@ The simulation couldn't complete due to network or system issues.
                           Low Gas Balance
                         </p>
                         <p className="text-yellow-700 dark:text-yellow-300 text-xs">
-                          You need ETH on {getChainName(chainId)} for gas fees. Consider getting ~$5-10 worth of ETH there.
+                          You need gas token on {getChainName(chainId)} for gas fees. Consider getting ~$1-2 worth of ETH there.
                         </p>
                       </div>
                     </div>
@@ -501,39 +458,43 @@ The simulation couldn't complete due to network or system issues.
                   <span>{amount} {token}</span>
                 </div>
 
-                {!isDirect && (
+                {!isDirect && simulationResult.fees && (
                   <>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Protocol Fee:</span>
-                      <span>{simulationResult.intent.fees.protocol}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Solver Fee:</span>
-                      <span>{simulationResult.intent.fees.solver}</span>
-                    </div>
+                    {simulationResult.fees.protocol && (
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Protocol Fee:</span>
+                        <span>{simulationResult.fees.protocol}</span>
+                      </div>
+                    )}
+                    {simulationResult.fees.solver && (
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Solver Fee:</span>
+                        <span>{simulationResult.fees.solver}</span>
+                      </div>
+                    )}
                   </>
                 )}
 
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Gas Fee:</span>
-                  <span>{simulationResult.intent.fees.gasSupplied}</span>
+                  <span>{simulationResult.fees?.gasSupplied || '0.01'}</span>
                 </div>
 
                 <div className="border-t pt-1 mt-2">
                   <div className="flex justify-between font-medium">
                     <span>Total Cost:</span>
-                    <span>{simulationResult.intent.fees.total}</span>
+                    <span>{simulationResult.fees?.total || '0.01'}</span>
                   </div>
                 </div>
               </div>
             </div>
 
             {/* Source Chains (for Chain Abstraction) */}
-            {!isDirect && simulationResult.intent.sources.length > 0 && (
+            {!isDirect && simulationResult.simulation?.intent?.sources && simulationResult.simulation?.intent?.sources?.length > 0 && (
               <div className="space-y-2">
                 <h4 className="text-sm font-medium">Funding Sources</h4>
                 <div className="space-y-1">
-                  {simulationResult.intent.sources.map((source, index) => (
+                  {simulationResult.simulation?.intent?.sources?.map((source: any, index: number) => (
                     <div key={index} className="flex items-center gap-2 text-sm">
                       <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
                       <span>Chain {source.chainID}: {source.amount} {token}</span>
@@ -548,7 +509,7 @@ The simulation couldn't complete due to network or system issues.
               <h4 className="text-sm font-medium">Destination</h4>
               <div className="flex items-center gap-2 text-sm">
                 <ArrowRight className="h-4 w-4 text-green-500" />
-                <span>Chain {chainId}: {simulationResult.intent.destination.amount} {token}</span>
+                <span>Chain {chainId}: {simulationResult.simulation?.intent.destination.amount || amount} {token}</span>
               </div>
               <div className="text-xs text-muted-foreground">
                 To: {recipient.slice(0, 6)}...{recipient.slice(-4)}

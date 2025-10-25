@@ -1,8 +1,9 @@
-import React, { memo } from 'react';
+import React, { memo, useState } from 'react';
 import { Handle, Position, NodeProps } from '@xyflow/react';
 import { Card, CardHeader, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { ErrorLogCard } from './ErrorLogCard';
 import {
   ArrowRightLeft,
   Send,
@@ -104,10 +105,61 @@ interface WorkflowNodeProps extends NodeProps {
 }
 
 export const WorkflowNode = memo(({ data, selected }: WorkflowNodeProps) => {
-  const { setSelectedNode, deleteNode, currentWorkflow, executingNodeId, isExecuting, nodeExecutionStatus } = useWorkflowStore();
+  const {
+    setSelectedNode,
+    deleteNode,
+    currentWorkflow,
+    executingNodeId,
+    isExecuting,
+    nodeExecutionStatus,
+    nodeErrors,
+    clearNodeError,
+    setNodeError
+  } = useWorkflowStore();
+  const [showErrorLog, setShowErrorLog] = useState(false);
   const Icon = NODE_ICONS[data.type];
   const isCurrentlyExecuting = isExecuting && executingNodeId === data.id;
   const executionStatus = nodeExecutionStatus[data.id];
+  const nodeError = nodeErrors[data.id];
+
+  // Auto-show error log when there's an error
+  React.useEffect(() => {
+    if (nodeError && executionStatus === 'error') {
+      setShowErrorLog(true);
+    }
+  }, [nodeError, executionStatus]);
+
+  // Development: Add test function to window for console testing
+  React.useEffect(() => {
+    if (typeof window !== 'undefined') {
+      (window as any).testNodeError = (nodeId: string) => {
+        const testError = {
+          message: "Network connection failed",
+          details: "Unable to connect to the blockchain network. Please check your internet connection and try again.",
+          timestamp: new Date().toISOString(),
+          errorType: 'network' as const,
+          context: { nodeType: data.type, nodeId },
+          suggestions: [
+            "Check your internet connection",
+            "Verify the RPC endpoint is accessible",
+            "Try switching to a different network"
+          ],
+          retryable: true
+        };
+        setNodeError(nodeId, testError);
+      };
+    }
+  }, [data.type, setNodeError]);
+
+  // Debug logging for split nodes
+  if (data.type === 'split') {
+    console.log('🔍 Split node rendering:', {
+      id: data.id,
+      type: data.type,
+      outputs: data.outputs,
+      outputCount: data.outputs?.length || 0
+    });
+  }
 
   const handleClick = () => {
     setSelectedNode(data.id);
@@ -180,7 +232,11 @@ export const WorkflowNode = memo(({ data, selected }: WorkflowNodeProps) => {
         {executionStatus === 'error' && (
           <div
             key="error"
-            className="absolute -top-3 -right-3 z-20 flex items-center gap-1.5 bg-gradient-to-r from-red-50 to-pink-50 border-2 border-red-300 rounded-full px-2.5 py-1 shadow-lg opacity-0 scale-75 animate-[fadeInScale_500ms_ease-out_forwards]"
+            className="absolute -top-3 -right-3 z-20 flex items-center gap-1.5 bg-gradient-to-r from-red-50 to-pink-50 border-2 border-red-300 rounded-full px-2.5 py-1 shadow-lg opacity-0 scale-75 animate-[fadeInScale_500ms_ease-out_forwards] cursor-pointer"
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowErrorLog(true);
+            }}
           >
             <XCircle className="h-4 w-4 text-red-600" />
             <span className="text-red-700 text-xs font-semibold">Error</span>
@@ -301,6 +357,30 @@ export const WorkflowNode = memo(({ data, selected }: WorkflowNodeProps) => {
           className="hover:!scale-150 hover:!shadow-lg hover:!shadow-emerald-200/60 !rounded-full"
         />
       ))}
+
+      {/* Error Log Card */}
+      {showErrorLog && nodeError && (
+        <div
+          className="absolute top-full left-0 mt-2 z-50"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <ErrorLogCard
+            nodeId={data.id}
+            nodeName={data.label}
+            nodeType={data.type}
+            error={nodeError}
+            onClose={() => {
+              setShowErrorLog(false);
+              clearNodeError(data.id);
+            }}
+            onRetry={() => {
+              setShowErrorLog(false);
+              clearNodeError(data.id);
+              // Could implement retry logic here
+            }}
+          />
+        </div>
+      )}
     </>
   );
 });

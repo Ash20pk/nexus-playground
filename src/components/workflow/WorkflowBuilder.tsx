@@ -15,13 +15,14 @@ import {
   useReactFlow
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Plus } from 'lucide-react';
+import { Plus, Wallet } from 'lucide-react';
 
 import { WorkflowNode } from './WorkflowNode';
 import { NodePalette } from './NodePalette';
 import { NodeConfigPanel } from './NodeConfigPanel';
 import { WorkflowToolbar } from './WorkflowToolbar';
 import { WorkflowLegend } from './WorkflowLegend';
+import { UnifiedBalanceCard } from './UnifiedBalanceCard';
 import { useWorkflowStore } from '@/store/workflowStore';
 import { WorkflowNodeType } from '@/types/workflow';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -46,6 +47,7 @@ export const WorkflowBuilder: React.FC = () => {
 
   const [isNodePaletteOpen, setIsNodePaletteOpen] = useState(false);
   const [isConfigPanelOpen, setIsConfigPanelOpen] = useState(false);
+  const [isBalanceCardVisible, setIsBalanceCardVisible] = useState(false);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(currentWorkflow?.nodes || []);
   const [edges, setEdges, onEdgesChange] = useEdgesState(currentWorkflow?.edges || []);
@@ -235,14 +237,28 @@ export const WorkflowBuilder: React.FC = () => {
         </ReactFlow>
       </div>
 
-      {/* Floating Add Node Button */}
-      <Button
-        size="lg"
-        className="fixed bottom-8 left-8 rounded-full h-14 w-14 p-0 shadow-[-6px_6px_0_0_#000000] hover:shadow-[-8px_8px_0_0_#000000] z-10"
-        onClick={() => setIsNodePaletteOpen(true)}
-      >
-        <Plus className="h-6 w-6" />
-      </Button>
+      {/* Floating Action Buttons */}
+      <div className="fixed bottom-8 left-8 flex flex-col gap-3 z-10">
+        {/* Add Node Button */}
+        <Button
+          size="lg"
+          className="rounded-full h-14 w-14 p-0 shadow-[-6px_6px_0_0_#000000] hover:shadow-[-8px_8px_0_0_#000000]"
+          onClick={() => setIsNodePaletteOpen(true)}
+        >
+          <Plus className="h-6 w-6" />
+        </Button>
+
+        {/* Balance Card Toggle Button */}
+        <Button
+          size="lg"
+          variant={isBalanceCardVisible ? "default" : "outline"}
+          className="rounded-full h-14 w-14 p-0 shadow-[-6px_6px_0_0_#000000] hover:shadow-[-8px_8px_0_0_#000000]"
+          onClick={() => setIsBalanceCardVisible(!isBalanceCardVisible)}
+          title="View unified balances across all chains"
+        >
+          <Wallet className="h-6 w-6" />
+        </Button>
+      </div>
 
       {/* Legend/Help */}
       <WorkflowLegend />
@@ -284,6 +300,12 @@ export const WorkflowBuilder: React.FC = () => {
           </DialogContent>
         </Dialog>
       )}
+
+      {/* Unified Balance Card */}
+      <UnifiedBalanceCard
+        isVisible={isBalanceCardVisible}
+        onClose={() => setIsBalanceCardVisible(false)}
+      />
     </div>
   );
 };

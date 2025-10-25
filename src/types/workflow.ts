@@ -133,8 +133,8 @@ export interface SimulateTransferNodeConfig extends WorkflowNodeConfig {
 }
 
 export interface DelayNodeConfig extends WorkflowNodeConfig {
-  duration: number; // in seconds
-  unit: 'seconds' | 'minutes' | 'hours';
+  duration: number;
+  unit: 'seconds' | 'minutes' | 'hours' | 'days';
 }
 
 export interface LoopNodeConfig extends WorkflowNodeConfig {
@@ -143,7 +143,8 @@ export interface LoopNodeConfig extends WorkflowNodeConfig {
 }
 
 export interface SplitNodeConfig extends WorkflowNodeConfig {
-  branches: number;
+  // Split node is a simple connector: 1 input → 2 outputs
+  // No configuration needed - just passes data through to both outputs
 }
 
 export interface AggregateNodeConfig extends WorkflowNodeConfig {

@@ -37,6 +37,7 @@ interface StakeSimulationResult {
     total: string;
   };
   isAvailableBalanceInsufficient: boolean;
+  balanceCheckError?: boolean;
 }
 
 export const StakePreview: React.FC<StakePreviewProps> = ({
@@ -96,8 +97,47 @@ export const StakePreview: React.FC<StakePreviewProps> = ({
         throw new Error(`${protocolInfo?.name} is not available on ${getChainName(chainId)}`);
       }
 
-      // Create simulation result with real data from DeFi config
-      const mockResult: StakeSimulationResult = {
+      // STEP 1: Check actual balance using Nexus SDK with enhanced error handling
+      let balances;
+      let availableBalance = 0;
+      let hasInsufficientBalance = true;
+      let balanceCheckError = false;
+
+      try {
+        balances = await nexusSdk.getUnifiedBalances(false); // Only CA-applicable tokens
+        console.log('🔍 STAKE PREVIEW - Fetched balances:', balances);
+
+        // Find the specific token balance
+        const tokenBalance = balances.find(balance => balance.symbol === token);
+        availableBalance = tokenBalance ? parseFloat(tokenBalance.balance) : 0;
+        hasInsufficientBalance = availableBalance < numericAmount;
+
+        console.log('💰 STAKE PREVIEW - Balance analysis:', {
+          token,
+          available: availableBalance,
+          required: numericAmount,
+          sufficient: !hasInsufficientBalance,
+          hasTokenBalance: !!tokenBalance
+        });
+      } catch (balanceError) {
+        console.warn('⚠️ STAKE PREVIEW - Balance check failed, proceeding with warning:', balanceError);
+        balanceCheckError = true;
+
+        // Check if this is a network/Ankr error
+        const errorMessage = balanceError instanceof Error ? balanceError.message : 'Unknown error';
+        if (errorMessage.includes('balances cannot be retrieved') ||
+            errorMessage.includes('Ankr') ||
+            errorMessage.includes('network')) {
+          // For network errors, we'll still show the preview but with a warning
+          hasInsufficientBalance = false; // Assume sufficient for preview purposes
+        } else {
+          // For other errors, re-throw
+          throw balanceError;
+        }
+      }
+
+      // STEP 2: Create simulation result with REAL balance data
+      const simulationResult: StakeSimulationResult = {
         protocol: {
           name: protocolInfo.name,
           contractAddress: protocolConfig.contractAddress,
@@ -107,7 +147,7 @@ export const StakePreview: React.FC<StakePreviewProps> = ({
         },
         staking: {
           inputAmount: numericAmount.toString(),
-          expectedShares: (numericAmount * (0.98 + Math.random() * 0.04)).toFixed(6), // Account for small fees
+          expectedShares: (numericAmount * 0.99).toFixed(6), // Account for small protocol fees
           estimatedApy: protocolConfig.apy?.estimated || 0,
           estimatedYearlyRewards: (numericAmount * ((protocolConfig.apy?.estimated || 0) / 100)).toFixed(6)
         },
@@ -116,15 +156,13 @@ export const StakePreview: React.FC<StakePreviewProps> = ({
           protocolFee: '0', // Most protocols don't charge fees for supply
           total: CHAIN_RECOMMENDATIONS[chainId]?.avgGasCost.supply || '0.001 ETH'
         },
-        isAvailableBalanceInsufficient: false
+        isAvailableBalanceInsufficient: hasInsufficientBalance, // REAL balance check
+        balanceCheckError: balanceCheckError
       };
 
-      // Add some realistic delay for simulation
-      await new Promise(resolve => setTimeout(resolve, 800));
-
-      console.log('✅ STAKE PREVIEW - Simulation successful:', mockResult);
-      setSimulationResult(mockResult);
-      onSimulate?.(mockResult);
+      console.log('✅ STAKE PREVIEW - Simulation successful:', simulationResult);
+      setSimulationResult(simulationResult);
+      onSimulate?.(simulationResult);
 
     } catch (error) {
       let errorMessage = error instanceof Error ? error.message : 'Staking simulation failed';
@@ -269,7 +307,19 @@ export const StakePreview: React.FC<StakePreviewProps> = ({
 
         {simulationResult && (
           <div className="space-y-4">
-            {simulationResult.isAvailableBalanceInsufficient && (
+            {simulationResult.balanceCheckError && (
+              <Alert variant="destructive">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>
+                  <strong>Balance Check Unavailable</strong>
+                  <div className="mt-1 text-sm">
+                    Unable to verify {token} balance due to network connectivity issues.
+                    Preview shown for estimation only. Please ensure you have sufficient {token} before executing.
+                  </div>
+                </AlertDescription>
+              </Alert>
+            )}
+            {!simulationResult.balanceCheckError && simulationResult.isAvailableBalanceInsufficient && (
               <Alert variant="destructive">
                 <AlertCircle className="h-4 w-4" />
                 <AlertDescription>

@@ -1230,6 +1230,97 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
           />
         );
 
+      case 'delay':
+        return (
+          <div className="space-y-4">
+            <div>
+              <Label>Duration</Label>
+              <Input
+                type="number"
+                value={localConfig.duration || ''}
+                onChange={(e) => handleSelectChange('duration', parseFloat(e.target.value))}
+                placeholder="Enter duration"
+                min="0"
+                step="0.1"
+              />
+            </div>
+            <div>
+              <Label>Time Unit</Label>
+              <Select
+                value={localConfig.unit || 'seconds'}
+                onValueChange={(value) => handleSelectChange('unit', value)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="seconds">Seconds</SelectItem>
+                  <SelectItem value="minutes">Minutes</SelectItem>
+                  <SelectItem value="hours">Hours</SelectItem>
+                  <SelectItem value="days">Days</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Preview */}
+            {localConfig.duration && localConfig.unit && (
+              <div className="p-3 bg-blue-50 border border-blue-200 rounded">
+                <p className="text-sm text-blue-700">
+                  Workflow will pause for <strong>{localConfig.duration} {localConfig.unit}</strong>
+                </p>
+              </div>
+            )}
+          </div>
+        );
+
+      case 'split':
+        return (
+          <div className="space-y-4">
+            <div className="p-3 bg-blue-50 border border-blue-200 rounded">
+              <h4 className="font-medium text-blue-900">Split Node</h4>
+              <p className="text-sm text-blue-700 mt-1">
+                Simple connector that splits one input into two outputs. No configuration needed.
+              </p>
+            </div>
+
+            {/* Visual representation */}
+            <div className="p-3 bg-gray-50 border border-gray-200 rounded">
+              <div className="text-sm text-gray-700">
+                <div className="flex items-center justify-center">
+                  <div className="text-center">
+                    {/* Input */}
+                    <div className="flex justify-center mb-2">
+                      <div className="w-4 h-4 bg-blue-500 rounded-full"></div>
+                    </div>
+                    <div className="text-xs text-gray-600 mb-3">1 Input</div>
+
+                    {/* Split symbol */}
+                    <div className="flex justify-center mb-3">
+                      <div className="w-8 h-1 bg-gray-400"></div>
+                    </div>
+
+                    {/* Outputs */}
+                    <div className="flex justify-center gap-8">
+                      <div className="text-center">
+                        <div className="w-4 h-4 bg-green-500 rounded-full mx-auto"></div>
+                        <div className="text-xs text-gray-600 mt-1">Output 1</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="w-4 h-4 bg-orange-500 rounded-full mx-auto"></div>
+                        <div className="text-xs text-gray-600 mt-1">Output 2</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="text-sm text-muted-foreground">
+              Connect one node to this split node's input, then connect two different nodes to its outputs to create parallel execution paths.
+            </div>
+          </div>
+        );
+
       case 'condition':
         return (
           <div className="space-y-4">
