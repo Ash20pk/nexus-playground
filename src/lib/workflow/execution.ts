@@ -11,7 +11,8 @@ import {
   CustomContractNodeConfig,
   AllowanceManagementNodeConfig,
   SimulateBridgeNodeConfig,
-  SimulateTransferNodeConfig
+  SimulateTransferNodeConfig,
+  BalanceCheckNodeConfig
 } from '@/types/workflow';
 import { DEFI_PROTOCOLS, getProtocolConfig } from '@/lib/defi-config';
 // Network store is used in workflowStore.ts to pass networkType to context
@@ -48,10 +49,14 @@ export class WorkflowExecutionEngine {
         throw new Error('No trigger node found in workflow');
       }
 
-      // Execute nodes in sequence (simplified execution order)
-      for (const node of workflow.nodes) {
-        if (node.data.type === 'trigger') continue; // Skip trigger node
+      // Get execution path starting from trigger node
+      const executionPath = this.getExecutionPath(workflow, triggerNode.id);
 
+      console.log(`🔄 WORKFLOW EXECUTION - Found ${executionPath.length} connected nodes to execute:`,
+        executionPath.map(node => `${node.data.label} (${node.data.type})`));
+
+      // Execute nodes in the connected path
+      for (const node of executionPath) {
         console.log(`Executing node: ${node.data.label} (${node.data.type})`);
         this.context.onNodeExecuting?.(node.id);
 
@@ -113,6 +118,9 @@ export class WorkflowExecutionEngine {
 
       case 'stake':
         return this.executeStake(node);
+
+      case 'balance-check':
+        return this.executeBalanceCheck(node);
 
       default:
         throw new Error(`Unknown node type: ${node.data.type}`);
@@ -1365,6 +1373,189 @@ export class WorkflowExecutionEngine {
     }
   }
 
+  private async executeBalanceCheck(node: WorkflowNode): Promise<unknown> {
+    const config = node.data.config as BalanceCheckNodeConfig;
+    console.log('🔍 BALANCE CHECK - Starting balance check operation:', { nodeId: node.id, config });
+
+    // Validation
+    if (!config.token) {
+      throw new Error('Token is required for balance check operation');
+    }
+
+    // Resolve address - handle 'fromPrevious' or static values
+    let checkAddress: string;
+    if (config.address === 'fromPrevious') {
+      const previousAddress = this.context.results[`${node.id}_previousAddress`] || this.context.variables.address;
+      if (!previousAddress) {
+        throw new Error('No previous address available for balance check operation');
+      }
+      checkAddress = String(previousAddress);
+    } else {
+      checkAddress = String(this.resolveValue(config.address));
+    }
+
+    // Validate address format
+    if (!checkAddress || !checkAddress.startsWith('0x') || checkAddress.length !== 42) {
+      throw new Error(`Invalid address format for balance check: ${checkAddress}. Must be a valid Ethereum address (0x...)`);
+    }
+
+    console.log('🔍 BALANCE CHECK - Configuration:', {
+      token: config.token,
+      address: checkAddress,
+      chain: config.chain,
+      condition: config.condition || 'none',
+      value: config.value || 'N/A'
+    });
+
+    try {
+      // Check SDK initialization
+      if (!this.context.nexusSdk) {
+        throw new Error('Nexus SDK not initialized');
+      }
+
+      console.log(`🔍 BALANCE CHECK - Fetching ${config.token} balance for address ${checkAddress}`);
+
+      // Get unified balance for the specific token
+      const balanceResult = await this.context.nexusSdk.getUnifiedBalance(config.token);
+
+      if (!balanceResult) {
+        console.log('⚠️ BALANCE CHECK - No balance data returned from SDK');
+        throw new Error(`Unable to fetch balance for token ${config.token}`);
+      }
+
+      console.log('💰 BALANCE CHECK - Balance data received:', balanceResult);
+
+      // Extract total balance and chain-specific information
+      const totalBalance = parseFloat(balanceResult.balance || '0');
+      const balanceInFiat = balanceResult.balanceInFiat || 0;
+
+      // Find balance on the specific chain if provided
+      let chainBalance = 0;
+      let chainBalanceInFiat = 0;
+      if (config.chain) {
+        const chainBreakdown = balanceResult.breakdown?.find(b => b.chain.id === config.chain);
+        if (chainBreakdown) {
+          chainBalance = parseFloat(chainBreakdown.balance || '0');
+          chainBalanceInFiat = chainBreakdown.balanceInFiat || 0;
+        }
+      }
+
+      const effectiveBalance = config.chain ? chainBalance : totalBalance;
+      const effectiveBalanceInFiat = config.chain ? chainBalanceInFiat : balanceInFiat;
+
+      console.log('📊 BALANCE CHECK - Balance summary:', {
+        token: config.token,
+        totalBalance,
+        balanceInFiat,
+        chainSpecific: config.chain ? {
+          chainId: config.chain,
+          balance: chainBalance,
+          balanceInFiat: chainBalanceInFiat
+        } : null,
+        effectiveBalance,
+        effectiveBalanceInFiat
+      });
+
+      // Evaluate condition if specified
+      let conditionMet = true;
+      let conditionResult = null;
+
+      if (config.condition && config.condition !== 'none' && config.value) {
+        const compareValue = parseFloat(config.value);
+
+        if (isNaN(compareValue)) {
+          throw new Error(`Invalid comparison value: ${config.value}. Must be a valid number.`);
+        }
+
+        switch (config.condition) {
+          case 'greater':
+            conditionMet = effectiveBalance > compareValue;
+            break;
+          case 'less':
+            conditionMet = effectiveBalance < compareValue;
+            break;
+          case 'equal':
+            conditionMet = Math.abs(effectiveBalance - compareValue) < 0.000001; // Handle floating point precision
+            break;
+          default:
+            throw new Error(`Unknown condition: ${config.condition}`);
+        }
+
+        conditionResult = {
+          condition: config.condition,
+          compareValue,
+          actualValue: effectiveBalance,
+          result: conditionMet
+        };
+
+        console.log(`🔍 BALANCE CHECK - Condition evaluation:`, {
+          condition: `${effectiveBalance} ${config.condition} ${compareValue}`,
+          result: conditionMet ? 'PASSED' : 'FAILED'
+        });
+      }
+
+      console.log(`✅ BALANCE CHECK - Balance check completed successfully`);
+
+      // Store results for potential use by subsequent nodes
+      const nodeResults = {
+        success: true,
+        token: config.token,
+        address: checkAddress,
+        chain: config.chain,
+        balance: {
+          total: totalBalance,
+          totalInFiat: balanceInFiat,
+          effective: effectiveBalance,
+          effectiveInFiat: effectiveBalanceInFiat,
+          chainSpecific: config.chain ? {
+            chainId: config.chain,
+            balance: chainBalance,
+            balanceInFiat: chainBalanceInFiat
+          } : null
+        },
+        condition: conditionResult,
+        conditionMet,
+        timestamp: new Date().toISOString(),
+        breakdown: balanceResult.breakdown
+      };
+
+      this.context.results[node.id] = nodeResults;
+      this.context.results[`${node.id}_balance`] = effectiveBalance;
+      this.context.results[`${node.id}_conditionMet`] = conditionMet;
+
+      return nodeResults;
+
+    } catch (error) {
+      console.error('❌ BALANCE CHECK - Balance check operation failed:', error);
+
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      // Provide better error messages for common issues
+      let userFriendlyMessage = errorMessage;
+      if (errorMessage.includes('token not supported')) {
+        userFriendlyMessage = `Token ${config.token} is not supported for balance checking.`;
+      } else if (errorMessage.includes('network error')) {
+        userFriendlyMessage = `Network error while fetching balance. Please check your connection and try again.`;
+      } else if (errorMessage.includes('invalid address')) {
+        userFriendlyMessage = `Invalid address format: ${checkAddress}. Please provide a valid Ethereum address.`;
+      }
+
+      console.error(`❌ BALANCE CHECK - Balance check failed: ${userFriendlyMessage}`);
+
+      // Store error details for debugging
+      this.context.results[node.id] = {
+        success: false,
+        error: error,
+        errorMessage: errorMessage,
+        token: config.token,
+        address: checkAddress,
+        chain: config.chain
+      };
+
+      throw new Error('Balance check operation failed: ' + userFriendlyMessage);
+    }
+  }
+
   private resolveValue(value: unknown): unknown {
     if (typeof value === 'string' && value.startsWith('{{') && value.endsWith('}}')) {
       const variableName = value.slice(2, -2);
@@ -1501,6 +1692,44 @@ export class WorkflowExecutionEngine {
     };
 
     return chainMapping[testnetChainId] || testnetChainId;
+  }
+
+  private getExecutionPath(workflow: Workflow, startNodeId: string): WorkflowNode[] {
+    const visited = new Set<string>();
+    const executionPath: WorkflowNode[] = [];
+
+    // Build adjacency list from edges
+    const adjacencyList = new Map<string, string[]>();
+    for (const edge of workflow.edges) {
+      if (!adjacencyList.has(edge.source)) {
+        adjacencyList.set(edge.source, []);
+      }
+      adjacencyList.get(edge.source)!.push(edge.target);
+    }
+
+    // Depth-first traversal from start node
+    const dfs = (nodeId: string) => {
+      if (visited.has(nodeId)) return;
+
+      visited.add(nodeId);
+
+      // Find the node by ID
+      const node = workflow.nodes.find(n => n.id === nodeId);
+      if (node) {
+        executionPath.push(node);
+      }
+
+      // Visit connected nodes
+      const connectedNodes = adjacencyList.get(nodeId) || [];
+      for (const connectedNodeId of connectedNodes) {
+        dfs(connectedNodeId);
+      }
+    };
+
+    // Start traversal from trigger node
+    dfs(startNodeId);
+
+    return executionPath;
   }
 
   private isBridgeSupported(token: string, fromChain: number, toChain: number): boolean {

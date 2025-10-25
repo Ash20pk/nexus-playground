@@ -33,9 +33,11 @@ interface NodeConfigPanelProps {
 interface BalanceCheckConfigProps {
   node: WorkflowNode;
   onConfigUpdate: (key: string, value: any) => void;
+  chainOptions: Array<{id: number, name: string}>;
+  tokenOptions: Array<{symbol: string, name: string}>;
 }
 
-const BalanceCheckConfig: React.FC<BalanceCheckConfigProps> = ({ node, onConfigUpdate }) => {
+const BalanceCheckConfig: React.FC<BalanceCheckConfigProps> = ({ node, onConfigUpdate, chainOptions, tokenOptions }) => {
   // Local state for immediate UI updates
   const [localConfig, setLocalConfig] = useState(node.data.config);
   const updateTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
@@ -1223,6 +1225,8 @@ export const NodeConfigPanel: React.FC<NodeConfigPanelProps> = ({ node, onDelete
           <BalanceCheckConfig
             node={node}
             onConfigUpdate={handleSelectChange}
+            chainOptions={chainOptions}
+            tokenOptions={tokenOptions}
           />
         );
 
