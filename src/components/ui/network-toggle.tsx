@@ -2,10 +2,12 @@ import React from 'react';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { useNetworkStore } from '@/store/networkStore';
-import { Globe, TestTube } from 'lucide-react';
+import { useNexus } from '@/provider/NexusProvider';
+import { Globe, TestTube, Loader2 } from 'lucide-react';
 
 export const NetworkToggle: React.FC = () => {
   const { networkType, setNetworkType, isMainnet } = useNetworkStore();
+  const { isInitializing } = useNexus();
 
   const handleToggle = (checked: boolean) => {
     setNetworkType(checked ? 'mainnet' : 'testnet');
@@ -21,6 +23,7 @@ export const NetworkToggle: React.FC = () => {
       <Switch
         checked={isMainnet()}
         onCheckedChange={handleToggle}
+        disabled={isInitializing}
         aria-label="Toggle between testnet and mainnet"
         className="border-l border-gray-200"
       />
@@ -32,9 +35,14 @@ export const NetworkToggle: React.FC = () => {
 
       <Badge
         variant={isMainnet() ? "default" : "secondary"}
-        className={isMainnet() ? "bg-green-100 text-green-800" : "bg-orange-100 text-orange-800"}
+        className={`${isMainnet() ? "bg-green-100 text-green-800" : "bg-orange-100 text-orange-800"} ${isInitializing ? "opacity-75" : ""}`}
       >
-        {networkType.toUpperCase()}
+        <div className="flex items-center gap-1">
+          {isInitializing && (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          )}
+          {networkType.toUpperCase()}
+        </div>
       </Badge>
     </div>
   );

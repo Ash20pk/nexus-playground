@@ -57,6 +57,8 @@ export const NexusProvider: React.FC<NexusProviderProps> = ({
   const initializedNetworkType = useRef<string | null>(null);
   // Track if we're currently cleaning up to prevent re-initialization
   const isCleaningUp = useRef<boolean>(false);
+  // Debounce network changes to prevent rapid reinitializations
+  const networkChangeTimeout = useRef<NodeJS.Timeout | null>(null);
 
   const { connector } = useAccount();
   const config = useConfig();
@@ -274,8 +276,14 @@ export const NexusProvider: React.FC<NexusProviderProps> = ({
     }, 100);
   }, [cleanupSDK, initializeSDK, nexusSdk]);
 
-  // Main effect to handle SDK lifecycle
+  // Main effect to handle SDK lifecycle with debouncing for network changes
   useEffect(() => {
+    // Clear any existing timeout to debounce rapid changes
+    if (networkChangeTimeout.current) {
+      clearTimeout(networkChangeTimeout.current);
+      networkChangeTimeout.current = null;
+    }
+
     const handleSDKLifecycle = async () => {
       console.log('🔍 SDK lifecycle effect triggered:', {
         isConnected,
@@ -293,7 +301,7 @@ export const NexusProvider: React.FC<NexusProviderProps> = ({
         return;
       }
 
-      // Case 1: Wallet disconnected - cleanup SDK
+      // Case 1: Wallet disconnected - cleanup SDK (immediate, no debounce)
       if (!isConnected) {
         if (nexusSdk) {
           console.log('🔌 Wallet disconnected, cleaning up SDK');
@@ -302,11 +310,24 @@ export const NexusProvider: React.FC<NexusProviderProps> = ({
         return;
       }
 
-      // Case 2: Network changed - cleanup and reinitialize
+      // Case 2: Network changed - debounce to prevent rapid switches
       if (nexusSdk && initializedNetworkType.current !== null && initializedNetworkType.current !== networkType) {
-        console.log(`🔄 Network switch detected: ${initializedNetworkType.current} → ${networkType}`);
-        await cleanupSDK('network_change');
-        // Don't initialize here - let the next effect cycle handle it
+        console.log(`🔄 Network switch detected: ${initializedNetworkType.current} → ${networkType}, debouncing...`);
+
+        // Debounce network changes to prevent rapid reinitializations
+        networkChangeTimeout.current = setTimeout(async () => {
+          console.log('🔄 Processing debounced network change');
+          if (nexusSdk && initializedNetworkType.current !== networkType) {
+            await cleanupSDK('network_change');
+            // Trigger reinitialization after cleanup
+            setTimeout(() => {
+              if (isConnected && !nexusSdk && connector && !isInitializing) {
+                console.log(`🚀 Reinitializing SDK for ${networkType} network after network change`);
+                initializeSDK();
+              }
+            }, 100);
+          }
+        }, 300); // 300ms debounce
         return;
       }
 
@@ -321,6 +342,14 @@ export const NexusProvider: React.FC<NexusProviderProps> = ({
       console.error('❌ Error in SDK lifecycle handling:', error);
       setInitializationError(error instanceof Error ? error.message : 'SDK lifecycle error');
     });
+
+    // Cleanup timeout on unmount
+    return () => {
+      if (networkChangeTimeout.current) {
+        clearTimeout(networkChangeTimeout.current);
+        networkChangeTimeout.current = null;
+      }
+    };
   }, [isConnected, networkType, nexusSdk, connector, isInitializing, initializeSDK, cleanupSDK]);
 
   // Cleanup effect for component unmount
